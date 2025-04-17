@@ -1,0 +1,813 @@
+---
+title: "Delivery Standardization - EDA"
+author: "Tyler Swanson"
+date: "2025-02-18"
+output:    
+    html_document:
+      number_sections: no
+      toc: yes 
+      df_print: paged
+editor_options: 
+  chunk_output_type: inline
+  execute:
+    echo: true 
+    eval: true 
+  warning: false
+  message: false
+---
+
+```{r setup, include=FALSE}
+
+
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.width = 12,  # Increase width
+  fig.height = 8,  # Increase height
+  fig.align = "center",  # Center-align figures
+  out.width = "80%",  # Ensure full width
+  dpi = 300,  # High resolution
+  dev = "png"  # Save as PNG for better clarity
+)
+
+
+
+
+```
+
+
+# Cleaning Script
+## Load Packages & Import Data
+```{r Load Packages & Import Data}
+
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(janitor)
+library(stringr)
+library(ggplot2)
+library(tidyverse)
+library(tibble)
+library(kableExtra)
+library(randomForest)
+library(caret)
+
+list.files()
+getwd()
+setwd("C:/Users/Tyler.Swanson/OneDrive - PDQ.com/Documents/University of Utah - MSBA/Spring 2025/IS 6813 - MSBA Capstone Case Comp/Swire Data/delivery-standardization-group/")
+
+# customer_address_and_zip_mapping <- read.csv("customer_address_and_zip_mapping.csv", stringsAsFactors = FALSE)
+customer_address_and_zip_mapping <- read.csv("C:/Users/Tyler.Swanson/OneDrive - PDQ.com/Documents/University of Utah - MSBA/Spring 2025/IS 6813 - MSBA Capstone Case Comp/Swire Data/delivery-standardization-group/customer_address_and_zip_mapping.csv")
+
+# customer_profile <- read.csv("customer_profile.csv", stringsAsFactors = FALSE)
+customer_profile <- read.csv("C:/Users/Tyler.Swanson/OneDrive - PDQ.com/Documents/University of Utah - MSBA/Spring 2025/IS 6813 - MSBA Capstone Case Comp/Swire Data/delivery-standardization-group/customer_profile.csv")
+
+# delivery_cost_data <- read.csv("delivery_cost_data.csv", stringsAsFactors = FALSE)
+delivery_cost_data <- read.csv("C:/Users/Tyler.Swanson/OneDrive - PDQ.com/Documents/University of Utah - MSBA/Spring 2025/IS 6813 - MSBA Capstone Case Comp/Swire Data/delivery-standardization-group/delivery_cost_data.csv")
+
+# transactional_data <- read.csv("transactional_data.csv", stringsAsFactors = FALSE)
+transactional_data <- read.csv("C:/Users/Tyler.Swanson/OneDrive - PDQ.com/Documents/University of Utah - MSBA/Spring 2025/IS 6813 - MSBA Capstone Case Comp/Swire Data/delivery-standardization-group/transactional_data.csv")
+
+
+```
+
+
+## Prep delivery_cost_data 
+```{r delivery_cost_data}
+
+
+# Clean column names
+delivery_cost_data <- clean_names(delivery_cost_data)
+
+# Check column names again to verify correct names
+# colnames(delivery_cost_data)
+
+# Split 'vol_range' into 'min_cost_vol' & 'max_cost_vol'
+delivery_cost_data <- delivery_cost_data %>%
+  separate(vol_range, into = c("min_cost_vol", "max_cost_vol"), sep = " - ", fill = "right", extra = "drop") %>%
+  mutate(
+    min_cost_vol = as.integer(min_cost_vol),  # Convert to integer
+    max_cost_vol = as.integer(max_cost_vol),  # Convert to integer
+    median_delivery_cost = as.numeric(gsub("[$,]", "", median_delivery_cost))  # Clean currency symbols
+  )
+
+# Update missing values
+delivery_cost_data <- delivery_cost_data %>%
+  group_by(cold_drink_channel, applicable_to) %>%
+  mutate(
+    min_cost_vol = ifelse(is.na(min_cost_vol), max(max_cost_vol, na.rm = TRUE) + 1, min_cost_vol),  # Set min to max + 1
+    max_cost_vol = ifelse(is.na(max_cost_vol), 100000, max_cost_vol)  # Set max to 100,000
+  ) %>%
+  ungroup()
+
+# View cleaned delivery cost data
+# str(delivery_cost_data)
+# head(delivery_cost_data)
+# filter(delivery_cost_data, is.na(min_cost_vol) | is.na(max_cost_vol))
+```
+
+
+
+
+## Prep customer_address Object
+```{r Prep customer_address Object}
+
+# colnames(customer_address_and_zip_mapping)
+# glimpse(customer_address_and_zip_mapping)
+# head(customer_address_and_zip_mapping)
+
+
+# Split 'full.address' column
+customer_address_and_zip_mapping <- customer_address_and_zip_mapping %>%
+  separate(full.address, into = c("ZIP_CODE", "city", "state", "state_abbr", "county", "unknown", "lat", "lon"), sep = ",", extra = "drop") %>%
+  select(-unknown) %>%
+  mutate(
+    ZIP_CODE = as.character(ZIP_CODE),
+    lat = as.numeric(lat),
+    lon = as.numeric(lon)
+  )
+
+ customer_address_and_zip_mapping <- customer_address_and_zip_mapping %>%
+   select(-zip)
+
+# View cleaned address data
+# str(customer_address_and_zip_mapping)
+# head(customer_address_and_zip_mapping)
+
+```
+
+
+## Combine Data
+```{r Combine Data}
+
+
+customer_profile <- customer_profile %>%
+  mutate(ZIP_CODE = str_pad(as.character(ZIP_CODE), width = 5, side = "left", pad = "0"))
+
+# Verify the change
+table(nchar(customer_profile$ZIP_CODE))  # Ensure all values have length 5
+
+# Convert key identifiers to character
+customer_profile <- customer_profile %>%
+  mutate(
+    CUSTOMER_NUMBER = as.character(CUSTOMER_NUMBER),
+    PRIMARY_GROUP_NUMBER = as.character(PRIMARY_GROUP_NUMBER),
+    ZIP_CODE = as.character(ZIP_CODE)
+  )
+
+transactional_data <- transactional_data %>%
+  mutate(
+    CUSTOMER_NUMBER = as.character(CUSTOMER_NUMBER),
+    YEAR = as.integer(YEAR),
+    # Ensure DELIVERED_TOTAL exists before counting negative deliveries
+    DELIVERED_TOTAL = DELIVERED_CASES + DELIVERED_GALLONS
+  )
+
+# Count negative deliveries per customer per year
+neg_deliveries <- transactional_data %>%
+  group_by(CUSTOMER_NUMBER, YEAR) %>%
+  summarise(neg_deliveries = sum(DELIVERED_TOTAL < 0, na.rm = TRUE), .groups = "drop")
+
+# Merge customer profile with transactional data
+merged_data <- transactional_data %>%
+  left_join(customer_profile, by = "CUSTOMER_NUMBER") %>%
+  left_join(customer_address_and_zip_mapping, by = "ZIP_CODE") %>%
+  left_join(neg_deliveries, by = c("CUSTOMER_NUMBER", "YEAR")) %>%
+  left_join(
+    delivery_cost_data, 
+    by = join_by(COLD_DRINK_CHANNEL == cold_drink_channel, 
+                 between(DELIVERED_TOTAL, min_cost_vol, max_cost_vol))
+  )
+
+filtered_data <- merged_data %>% 
+  filter(DELIVERED_TOTAL >= 0)
+
+
+merged_data <- merged_data %>%
+  # Ensure applicable_to is not NA before grouping
+  filter(!is.na(applicable_to)) %>%
+  group_by(COLD_DRINK_CHANNEL, applicable_to) %>%
+  mutate(
+    min_cost_vol = ifelse(is.na(min_cost_vol), max(max_cost_vol, na.rm = TRUE) + 1, min_cost_vol),
+    max_cost_vol = ifelse(is.na(max_cost_vol), 100000, max_cost_vol),
+    median_delivery_cost = ifelse(is.na(median_delivery_cost), mean(median_delivery_cost, na.rm = TRUE), median_delivery_cost)
+  ) %>%
+  ungroup()
+
+# Remove duplicate rows based on customer_number, transaction_date, ordered_cases, and ordered_gallons
+# merged_data <- merged_data %>%
+#  distinct(customer_number, transaction_date, ordered_cases, ordered_gallons, .keep_all = TRUE)
+
+# Remove duplicates based on the specified columns
+merged_data <- merged_data %>% 
+  distinct(TRANSACTION_DATE, WEEK, YEAR, CUSTOMER_NUMBER, 
+           ORDERED_CASES, ORDERED_GALLONS, .keep_all = TRUE)
+
+# View merged data
+# str(merged_data)
+# head(merged_data)
+
+```
+
+
+
+
+## Standardize Column Names & Data Types
+```{r Standardize Column Names & Data Types}
+
+# Standardize column names
+merged_data <- merged_data %>% clean_names()
+
+# Convert date fields
+merged_data <- merged_data %>%
+  mutate(
+    transaction_date = mdy(transaction_date),
+    first_delivery_date = mdy(first_delivery_date),
+    on_boarding_date = mdy(on_boarding_date),
+    customer_number = as.character(customer_number),
+    primary_group_number = as.character(primary_group_number),
+    zip_code = as.character(zip_code)
+  )
+
+# Convert categorical fields to factors
+merged_data <- merged_data %>%
+  mutate(
+    cold_drink_channel = as.factor(cold_drink_channel),
+    frequent_order_type = as.factor(frequent_order_type),
+    trade_channel = as.factor(trade_channel),
+    sub_trade_channel = as.factor(sub_trade_channel),
+    order_type = as.factor(order_type),
+    local_market_partner = as.logical(local_market_partner),
+    co2_customer = as.logical(co2_customer)
+  )
+
+# View structure after cleaning
+# str(merged_data)
+# head(merged_data)
+
+
+```
+
+
+
+## Handle Negative Deliveries (Returns)
+```{r Negative Deliveries}
+# Count negative deliveries per customer per year
+neg_deliveries <- transactional_data %>%
+  group_by(CUSTOMER_NUMBER, YEAR) %>%
+  summarise(neg_deliveries = sum(DELIVERED_TOTAL < 0, na.rm = TRUE), .groups = "drop")
+
+# Merge with main dataset
+merged_data <- merged_data %>%
+  left_join(neg_deliveries, by = c("customer_number" = "CUSTOMER_NUMBER", "year" = "YEAR"))
+
+# View updated dataset
+# str(merged_data)
+# head(merged_data)
+
+
+```
+ 
+
+## Count Customers per Group
+```{r Count Customers per Group}
+# Count customers per primary group per year
+customer_group_count <- merged_data %>%
+  group_by(primary_group_number, year) %>%
+  summarise(customer_count = n(), .groups = "drop")
+
+# Merge with dataset
+merged_data <- merged_data %>%
+  left_join(customer_group_count, by = c("primary_group_number", "year"))
+
+# View updated dataset
+# str(merged_data)
+# head(merged_data)
+
+```
+
+
+## Review
+```{r Review}
+# Show summary of final cleaned dataset
+
+Swire_Master_Data <- merged_data
+
+# Remove duplicates based on the specified columns
+Swire_Master_Data <- Swire_Master_Data %>% 
+  distinct(transaction_date, week, year, customer_number, 
+           ordered_cases, loaded_cases, delivered_cases, 
+           ordered_gallons, loaded_gallons, .keep_all = TRUE)
+
+# Check the updated dataset
+# dim(Swire_Master_Data)  # New dimensions after removing duplicates
+head(Swire_Master_Data) # Preview first few rows
+# str(Swire_Master_Data)
+# head(Swire_Master_Data)
+
+glimpse(Swire_Master_Data)
+# summary(Swire_Master_Data)
+
+sum(is.na(Swire_Master_Data$min_cost_vol))  
+sum(is.na(Swire_Master_Data$max_cost_vol))  
+sum(is.na(Swire_Master_Data$median_delivery_cost))
+
+```
+
+
+# EDA
+## Additional Data Preperation 
+```{r Additional Data Preperation For EDA Analysis}
+
+colnames(Swire_Master_Data)
+sum(is.na(Swire_Master_Data$ordered_cases))  # Count NA values
+sum(is.na(Swire_Master_Data$ordered_gallons))
+
+colnames(Swire_Master_Data) == "ordered_cases"
+print(colnames(Swire_Master_Data))
+
+
+# Prepare the Swire_Master_Data2.0 dataset
+Swire_Master_Data2.0 <- Swire_Master_Data %>%
+  # Compute total order values
+  dplyr::mutate(
+    ORDERED_TOTAL = ordered_cases + ordered_gallons,
+    LOADED_TOTAL = loaded_cases + loaded_gallons,
+    DELIVERED_TOTAL = delivered_cases + delivered_gallons
+  ) %>%
+  # Remove rows where ORDERED_TOTAL is 0
+  filter(ORDERED_TOTAL != 0)
+
+# Calculate the number of transactions per customer per year
+customer_transaction_counts <- Swire_Master_Data2.0 %>%
+  group_by(customer_number, year) %>%
+  summarise(NUM_TRANSACTIONS = n(), .groups = "drop")
+
+# Ensure 'year' is included in customer_ordered_total
+customer_ordered_total <- Swire_Master_Data2.0 %>%
+  group_by(customer_number, year) %>%  # Include year in grouping
+  summarise(
+    TOTAL_ORDERED = sum(ORDERED_TOTAL, na.rm = TRUE),
+    ORDER_TYPE = order_type[which.min(transaction_date)],  # Selects first ORDER_TYPE based on earliest transaction
+    .groups = "drop"
+  )
+
+# Merge customer transaction count and ordered total data
+Swire_Master_Data2.0_upgraded <- customer_ordered_total %>%
+  inner_join(customer_transaction_counts, by = c("customer_number", "year")) %>%
+  mutate(AVG_ORDER_PER_TRANSACTION = TOTAL_ORDERED / NUM_TRANSACTIONS)
+
+# Keep only 2023 and 2024 data initially
+Swire_Master_Data2.0_filtered <- Swire_Master_Data2.0_upgraded %>%
+  filter(year %in% c(2023, 2024))  # Ensure only 2023 and 2024 are in the dataset
+
+# Compute percentage change in TOTAL_ORDERED from 2023 to 2024
+Swire_Master_Data2.0_2024 <- Swire_Master_Data2.0_filtered %>%
+  arrange(customer_number, year) %>%
+  group_by(customer_number) %>%
+  mutate(
+    PREV_TOTAL_ORDERED = lag(TOTAL_ORDERED, order_by = year),  # Ensures previous year's data is properly used
+    PERCENT_CHANGE_ORDERED = ((TOTAL_ORDERED - PREV_TOTAL_ORDERED) / PREV_TOTAL_ORDERED) * 100,
+    ORDERED_OVER_400 = as.factor(ifelse(TOTAL_ORDERED >= 400, 1, 0)),
+    ORDERED_OVER_800 = as.factor(ifelse(TOTAL_ORDERED >= 800, 1, 0)),
+    ORDERED_OVER_1200 = as.factor(ifelse(TOTAL_ORDERED >= 1200, 1, 0))
+  ) %>%
+  ungroup() %>%
+  filter(year == 2024)  # Keep only 2024 data with % change from 2023
+
+
+
+
+
+# Extract unique customer-related fields
+customer_info <- Swire_Master_Data2.0 %>%
+  select(customer_number, primary_group_number, frequent_order_type, 
+         first_delivery_date, on_boarding_date, cold_drink_channel, 
+         trade_channel, sub_trade_channel, local_market_partner, 
+         co2_customer, zip_code, city, state, state_abbr, county, lat, lon) %>%
+  distinct()  # Ensure uniqueness of customer-specific fields
+
+# Now merge customer info with the transactional dataset for 2024
+Swire_Master_Data2.0_2024_Enhanced <- Swire_Master_Data2.0_2024 %>%
+  left_join(customer_info, by = "customer_number") %>%
+  mutate(
+    tenure_days = as.numeric(difftime(first_delivery_date, on_boarding_date, units = "days"))  # Calculate tenure in days
+  ) %>%
+  select(-on_boarding_date, -first_delivery_date, -zip_code, -year)
+
+# Display structure and first few rows
+# str(Swire_Master_Data2.0_2024_Enhanced)
+# head(Swire_Master_Data2.0_2024_Enhanced)
+
+```
+
+
+
+
+## Average avg_order_per_transaction and Average avg_transactions
+
+Summary: Customers with higher total orders tend to place larger and more frequent transactions, with significant growth up to 800 units, after which the increase in transactions slows. Low-volume customers, ordering fewer than 400 units annually, exhibit smaller and less frequent purchases, while those exceeding 1,200 units consolidate orders for efficiency
+
+```{r avg_order_per_transaction and Average avg_transactions}
+
+# Filter and compute average order per transaction for different customer groups
+avg_order_per_transaction_under_400 <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED < 400) %>%
+  summarise(avg_transaction_value = mean(TOTAL_ORDERED / NUM_TRANSACTIONS, na.rm = TRUE)) %>%
+  pull(avg_transaction_value)  # Extract numeric value
+
+avg_order_per_transaction_over_400 <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED >= 400) %>%
+  summarise(avg_transaction_value = mean(TOTAL_ORDERED / NUM_TRANSACTIONS, na.rm = TRUE)) %>%
+  pull(avg_transaction_value)
+
+avg_order_per_transaction_over_800 <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED >= 800) %>%
+  summarise(avg_transaction_value = mean(TOTAL_ORDERED / NUM_TRANSACTIONS, na.rm = TRUE)) %>%
+  pull(avg_transaction_value)
+
+avg_order_per_transaction_over_1200 <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED >= 1200) %>%
+  summarise(avg_transaction_value = mean(TOTAL_ORDERED / NUM_TRANSACTIONS, na.rm = TRUE)) %>%
+  pull(avg_transaction_value)
+
+# Compute the average number of transactions for different order groups
+avg_transactions_under_400 <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED < 400) %>%
+  summarise(avg_num_transactions = mean(NUM_TRANSACTIONS, na.rm = TRUE)) %>%
+  pull(avg_num_transactions)
+
+avg_transactions_over_400 <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED >= 400) %>%
+  summarise(avg_num_transactions = mean(NUM_TRANSACTIONS, na.rm = TRUE)) %>%
+  pull(avg_num_transactions)
+
+avg_transactions_over_800 <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED >= 800) %>%
+  summarise(avg_num_transactions = mean(NUM_TRANSACTIONS, na.rm = TRUE)) %>%
+  pull(avg_num_transactions)
+
+avg_transactions_over_1200 <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED >= 1200) %>%
+  summarise(avg_num_transactions = mean(NUM_TRANSACTIONS, na.rm = TRUE)) %>%
+  pull(avg_num_transactions)
+
+# Print average order per transaction for different order groups
+cat("Average Order Per Transaction for Customers with total_ordered Under 400: ", avg_order_per_transaction_under_400, "\n")
+cat("Average Order Per Transaction for Customers with total_ordered Over 400: ", avg_order_per_transaction_over_400, "\n")
+cat("Average Order Per Transaction for Customers with total_ordered Over 800: ", avg_order_per_transaction_over_800, "\n")
+cat("Average Order Per Transaction for Customers with total_ordered Over 1200: ", avg_order_per_transaction_over_1200, "\n")
+
+# Print average number of transactions for different order groups
+cat("Average Number of Transactions for Customers with total_ordered Under 400: ", avg_transactions_under_400, "\n")
+cat("Average Number of Transactions for Customers with total_ordered Over 400: ", avg_transactions_over_400, "\n")
+cat("Average Number of Transactions for Customers with total_ordered Over 800: ", avg_transactions_over_800, "\n")
+cat("Average Number of Transactions for Customers with total_ordered Over 1200: ", avg_transactions_over_1200, "\n")
+```
+
+
+
+## FREQUENT_ORDER_TYPE VS TOTAL_ORDERED
+
+Summary: EDI and Sales Rep orders drive the highest average total ordered, indicating bulk purchases and strong sales interactions. MYCOKE LEGACY and MYCOKE360 customers order significantly less, suggesting a focus on smaller or more frequent transactions. Call Center orders are the lowest, likely reflecting one-off or urgent purchases.
+
+
+```{r FREQUENT_ORDER_TYPE VS TOTAL_ORDERED}
+
+fig_dir <- "C:/Users/Tyler.Swanson/Documents/Figures/"
+
+# Check if the directory exists, if not, create it
+if (!dir.exists(fig_dir)) {
+  dir.create(fig_dir, recursive = TRUE)
+}
+
+# Set figure path for RMarkdown chunks
+knitr::opts_chunk$set(fig.path = fig_dir, dev = "png")
+
+dev.off()  # Close any open graphics device
+graphics.off()  # Clear graphics history
+
+
+
+
+knitr::opts_chunk$set(dev = "pdf")
+
+
+
+# Group by FREQUENT_ORDER_TYPE and calculate the average TOTAL_ORDERED
+frequent_order_totals <- Swire_Master_Data2.0_2024_Enhanced %>%
+  group_by(frequent_order_type) %>%
+  summarise(AVG_TOTAL_ORDERED = mean(TOTAL_ORDERED, na.rm = TRUE)) %>%
+  arrange(desc(AVG_TOTAL_ORDERED))
+
+# Create bar plot
+ggplot(frequent_order_totals, aes(x = reorder(frequent_order_type, -AVG_TOTAL_ORDERED), y = AVG_TOTAL_ORDERED, fill = frequent_order_type)) +
+  geom_bar(stat = "identity", alpha = 0.7, show.legend = FALSE) +  # Bar plot without legend
+  labs(
+    title = "Frequent Order Type by Average Total Ordered",
+    x = "Frequent Order Type",
+    y = "Average Total Ordered"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))  # Rotate x-axis labels for readability
+```
+
+
+
+## COLD_DRINK_CHANNEL vs. TOTAL_ORDERED
+
+The analysis shows that Bulk Trade and Workplace channels have the highest average total ordered, followed by Wellness and Event channels. Public Sector, Accommodation, Goods, and Dining channels have lower average total ordered values.
+
+```{r COLD_DRINK_CHANNEL vs. TOTAL_ORDERED}
+
+# Group by cold_drink_channel and calculate the average TOTAL_ORDERED
+cold_drink_totals <- Swire_Master_Data2.0_2024_Enhanced %>%
+  group_by(cold_drink_channel) %>%
+  summarise(AVG_TOTAL_ORDERED = mean(TOTAL_ORDERED, na.rm = TRUE)) %>%
+  arrange(desc(AVG_TOTAL_ORDERED))
+
+# Create bar plot
+ggplot(cold_drink_totals, aes(x = reorder(cold_drink_channel, -AVG_TOTAL_ORDERED), y = AVG_TOTAL_ORDERED, fill = cold_drink_channel)) +
+  geom_bar(stat = "identity", alpha = 0.7, show.legend = FALSE) +  # Bar plot without legend
+  labs(
+    title = "Cold Drink Channels by Average Total Ordered",
+    x = "Cold Drink Channel",
+    y = "Average Total Ordered"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))  # Rotate x-axis labels for readability
+
+```
+
+
+## TRADE_CHANNEL vs. TOTAL_ORDERED
+
+Summary: Travel, Superstore, and Bulk Trade channels have the highest average total ordered, followed by General Activities and Academic Institutions. Other trade channels, including Healthcare, Recreation, and Defense, have lower average total ordered values. This comparison highlights that specific channels tend to have a very high average totaol ordered where others are consistently lower. 
+
+```{r TRADE_CHANNEL vs. TOTAL_ORDERED}
+# Aggregate data to calculate the average total ordered per trade channel
+top_trade_channels <- Swire_Master_Data2.0_2024_Enhanced %>%
+  group_by(trade_channel) %>%
+  summarise(AVG_TOTAL_ORDERED = mean(TOTAL_ORDERED, na.rm = TRUE)) %>%
+  arrange(desc(AVG_TOTAL_ORDERED)) %>%
+  slice_head(n = 20)  # Select top 10 trade channels
+
+# Create bar plot
+ggplot(top_trade_channels, aes(x = reorder(trade_channel, -AVG_TOTAL_ORDERED), y = AVG_TOTAL_ORDERED, fill = trade_channel)) +
+  geom_bar(stat = "identity", alpha = 0.7, show.legend = FALSE) +  # Bar plot without legend
+  labs(
+    title = "Top 10 Trade Channels by Average Total Ordered",
+    x = "Trade Channel",
+    y = "Average Total Ordered"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))  # Rotate x-axis labels for readability
+```
+
+
+
+## Top 20 SUB_TRADE_CHANNEL vs. TOTAL_ORDERED
+
+Summary: ruise, Online Store, and Recreation Park have the highest average total ordered. Bulk Trade, Other Travel, and Comprehensive Provider also show notable order volumes. Other sub-trade channels, including Game Center, Recreation Film, and Fast Food categories, have comparatively lower average total ordered values. This comparision hilights the significant variation in demand based on Sub Trade Channel.
+
+```{r op 20 SUB_TRADE_CHANNEL vs. TOTAL_ORDERED}
+
+# Aggregate data to calculate the average total ordered per sub-trade channel
+top_10_sub_trade <- Swire_Master_Data2.0_2024_Enhanced %>%
+  group_by(sub_trade_channel) %>%
+  summarise(AVG_TOTAL_ORDERED = mean(TOTAL_ORDERED, na.rm = TRUE)) %>%
+  arrange(desc(AVG_TOTAL_ORDERED)) %>%
+  slice_head(n = 20)  # Select top 20
+
+# Create bar plot
+ggplot(top_10_sub_trade, aes(x = reorder(sub_trade_channel, -AVG_TOTAL_ORDERED), y = AVG_TOTAL_ORDERED, fill = sub_trade_channel)) +
+  geom_bar(stat = "identity", alpha = 0.7, show.legend = FALSE) +  # Bar plot without legend
+  labs(
+    title = "Top 10 Sub Trade Channels by Average Total Ordered",
+    x = "Sub Trade Channel",
+    y = "Average Total Ordered"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))  # Rotate x-axis labels for readability
+
+
+```
+
+
+## LOCAL_MARKET_PARTNER vs. TOTAL_ORDERED
+
+Summary: Non-partners generally have higher median total orders and a wider range of order volumes, with some extreme outliers. Local market partners tend to have lower total orders, with a smaller interquartile range, indicating less variability in their order quantities.
+
+```{r LOCAL_MARKET_PARTNER vs. TOTAL_ORDERED}
+
+# Define threshold for filtering (optional)
+NUMBER <- 1000  # Exclude extreme values if needed
+
+# Filter dataset to exclude outliers (optional)
+ORDERED_UNDER_NUMBER <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED <= NUMBER)
+
+# Create boxplot to compare TOTAL_ORDERED by LOCAL_MARKET_PARTNER status
+ggplot(ORDERED_UNDER_NUMBER, aes(x = local_market_partner, y = TOTAL_ORDERED, fill = local_market_partner)) +
+  geom_boxplot(alpha = 0.6) +  # Boxplot with transparency
+  labs(
+    title = paste("LOCAL_MARKET_PARTNER vs. TOTAL_ORDERED (Excluding Orders >", NUMBER, ")"),
+    x = "Local Market Partner Status",
+    y = "Total Ordered"
+  ) +
+  theme_minimal()
+
+
+# Compute average TOTAL_ORDERED for Local Market Partners (TRUE) and Non-Partners (FALSE)
+avg_total_order <- Swire_Master_Data2.0_2024_Enhanced %>%
+  group_by(local_market_partner) %>%
+  summarise(AVG_TOTAL_ORDERED = mean(TOTAL_ORDERED, na.rm = TRUE))
+
+# Display result
+print(avg_total_order)
+
+```
+
+
+## CO2_CUSTOMER vs. TOTAL_ORDERED
+
+Summary: Both groups show a similar median total ordered volume, but CO2 customers exhibit greater variability with a wider interquartile range and more extreme outliers. Non-CO2 customers display a more concentrated distribution with fewer high-order outliers.D
+
+```{r CO2_CUSTOMER vs. TOTAL_ORDERED}
+# Define threshold for filtering (optional)
+NUMBER <- 1000  # Exclude extreme values if needed
+
+# Filter dataset to exclude outliers (optional)
+ORDERED_UNDER_NUMBER <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED <= NUMBER)
+
+# Create boxplot to compare TOTAL_ORDERED by CO2_CUSTOMER status
+ggplot(ORDERED_UNDER_NUMBER, aes(x = co2_customer, y = TOTAL_ORDERED, fill = co2_customer)) +
+  geom_boxplot(alpha = 0.6) +  # Boxplot with transparency
+  labs(
+    title = paste("CO2_CUSTOMER vs. TOTAL_ORDERED (Excluding Orders >", NUMBER, ")"),
+    x = "CO2 Customer Status",
+    y = "Total Ordered"
+  ) +
+  theme_minimal()
+
+
+# Compute average TOTAL_ORDERED for CO2 Customers (TRUE) vs. Non-CO2 Customers (FALSE)
+avg_total_order_co2 <- Swire_Master_Data2.0_2024_Enhanced %>%
+  group_by(co2_customer) %>%
+  summarise(AVG_TOTAL_ORDERED = mean(TOTAL_ORDERED, na.rm = TRUE))
+
+# Display result
+print(avg_total_order_co2)
+```
+
+
+## tenure_days vs. TOTAL_ORDERED
+
+Summary: The data points are widely dispersed, with no clear pattern, but the red trend line indicates a slight positive correlation—suggesting that longer tenure may be weakly associated with higher total ordered volume. However, the large spread of data implies high variability in ordering behavior regardless of tenure.
+
+```{r tenure_days vs. TOTAL_ORDERED}
+
+# Define threshold for TOTAL_ORDERED filtering (optional)
+NUMBER <- 1000  # Exclude extreme values if needed
+
+# Filter dataset to exclude outliers (optional)
+ORDERED_UNDER_NUMBER <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED <= NUMBER)
+
+# Create scatter plot
+ggplot(ORDERED_UNDER_NUMBER, aes(x = tenure_days, y = TOTAL_ORDERED)) +
+  geom_point(alpha = 0.6, color = "blue") +  # Scatter plot with transparency
+  geom_smooth(method = "lm", color = "red", se = FALSE) +  # Add a trend line (linear regression)
+  labs(
+    title = paste("Tenure Days vs. Total Ordered (Excluding Orders >", NUMBER, ")"),
+    x = "Tenure Days",
+    y = "Total Ordered"
+  ) +
+  theme_minimal()  # Use a clean theme
+
+```
+
+
+
+## Top 10 Order Total Customers
+```{r top 10 Customers}
+# Get the Top 10 Customers by TOTAL_ORDERED
+top_10_total_ordered <- Swire_Master_Data2.0_2024_Enhanced %>%
+  arrange(desc(TOTAL_ORDERED)) %>%  # Sort by TOTAL_ORDERED in descending order
+  slice_head(n = 20)  # Select top 20
+
+# Display as a formatted table
+top_10_total_ordered %>%
+  select(customer_number, TOTAL_ORDERED, ORDER_TYPE, NUM_TRANSACTIONS, AVG_ORDER_PER_TRANSACTION) %>%
+  kable("html", caption = "Top 10 Customers by TOTAL_ORDERED") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+
+
+
+## Plot NUM_TRANSACTIONS vs TOTAL_ORDERED
+
+Summary: The trend line suggests a strong positive correlation, indicating that as the number of transactions increases, the total ordered volume also tends to rise. The dense clustering along the diagonal reflects a consistent ordering pattern among most customers. However, the greater dispersion at higher transaction levels suggests variability in ordering behavior, where some customers place frequent small orders while others place fewer but larger orders.
+
+```{r Plot NUM_TRANSACTIONS vs TOTAL_ORDERED}
+
+NUMBER <- 1000
+
+# Create scatter plot
+# Filter out customers with TOTAL_ORDERED > 4000
+ORDERED_UNDER_NUMBER <- Swire_Master_Data2.0_2024_Enhanced %>%
+  filter(TOTAL_ORDERED <= NUMBER)
+
+# Create scatter plot
+ggplot(ORDERED_UNDER_NUMBER, aes(x = NUM_TRANSACTIONS, y = TOTAL_ORDERED)) +
+  geom_point(alpha = 0.6, color = "blue") +  # Scatter plot with transparency
+  geom_smooth(method = "lm", color = "red", se = FALSE) +  # Add a trend line (linear regression)
+  labs(
+    title = "Total Ordered vs. Number of Transactions (Excluding Orders > 4000)",
+    x = "Number of Transactions",
+    y = "Total Ordered"
+  ) +
+  theme_minimal()  # Use a clean theme
+```
+
+##  Correlation Heatmap of Key Numeric Variables
+
+Summary:  The total orders are concentrated in a few key states, while many others have little to no recorded orders
+
+```{r Correlation Heatmap of Key Numeric Variables}
+
+# Load necessary libraries
+
+library(maps)
+
+library(stringr)
+
+# Create a mapping of state abbreviations to full names
+state_abbr_to_name <- data.frame(
+  state_abbr = state.abb,
+  region = tolower(state.name)  # Convert full state names to lowercase for matching
+)
+
+# Aggregate total ordered by state
+state_orders <- Swire_Master_Data2.0_2024_Enhanced %>%
+  group_by(state_abbr) %>%
+  summarise(total_orders = sum(TOTAL_ORDERED, na.rm = TRUE))
+
+# Merge state order data with state name mapping
+state_orders <- left_join(state_orders, state_abbr_to_name, by = "state_abbr")
+
+# Load US map data
+us_states <- map_data("state")
+
+# Merge order data with map data
+us_map_data <- left_join(us_states, state_orders, by = "region")
+
+# Plot the choropleth map
+ggplot(us_map_data, aes(x = long, y = lat, group = group, fill = total_orders)) +
+  geom_polygon(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", na.value = "grey50") +
+  labs(
+    title = "Total Ordered by State",
+    fill = "Total Orders"
+  ) +
+  theme_minimal()
+
+```
+
+## Impact of Tenure on Order Volume
+
+Summary: little to no correlation between customer tenure and total ordered.
+```{r Impact of Tenure on Order Volume}
+str(Swire_Master_Data2.0_2024_Enhanced)
+
+ggplot(Swire_Master_Data2.0_2024_Enhanced, aes(x = tenure_days, y = TOTAL_ORDERED)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(title = "Customer Tenure vs. Total Ordered", x = "Tenure (Days)", y = "Total Ordered") +
+  theme_minimal()
+```
+
+
+## Comparing New vs. Long-Term Customers
+
+Summary: The total ordered volume between new and existing customers shows similar median order sizes but a right-skewed distribution with extreme outliers in both groups. Most customers place relatively small orders with extreme outliers in both groups. 
+
+```{r Comparing New vs. Long-Term Customers}
+Swire_Master_Data2.0_2024_Enhanced <- Swire_Master_Data2.0_2024_Enhanced %>%
+  mutate(new_customer = ifelse(tenure_days < 365, "New Customer", "Existing Customer"))
+
+ggplot(Swire_Master_Data2.0_2024_Enhanced, aes(x = new_customer, y = TOTAL_ORDERED, fill = new_customer)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Total Ordered: New vs. Existing Customers", 
+       x = "Customer Type", 
+       y = "Total Ordered") +
+  theme_minimal()
+```
+
+
+
+
+
+
+
