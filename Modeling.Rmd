@@ -1,0 +1,2734 @@
+---
+title: "Modeling | Swire Coca-Cola Capstone Project "
+subtitle: "IS 6813-001, Spring 2025 | Group 3"
+author:
+  - Tyler Swanson
+date: "3/18/2025"
+format: 
+    html:
+        css: styles.css
+        theme: simplex
+        toc: true
+        embed-resources: true
+toc: true
+---
+
+![](swire-banner.png)
+
+<br>
+
+# Business Problem Statement
+
+Regional beverage bottler Swire Coca-Cola (SCCU) relies on two business models: 1) “Red Truck”, which features high-volume customers serviced personally by Swire, and 2) “White Truck” or “Alternate Route to Market”, which entails smaller customers serviced by a third-party distributor.
+
+Swire’s current segmenting strategy has led to misallocation of resources, inflated expenses, and missed opportunities from clients with high-growth potential. Swire aims to better algin their customers with the business proposition of these models by identifying customer characteristics and  rdering behavior that better determines the right business model for the long-term relationship.
+
+
+# Modeling  Introduction
+
+Our approach enhances Swire Coca-Cola’s customer segmentation by analyzing transactional and profile data to identify key patterns. We apply clustering techniques to group similar customers and predictive modeling to forecast ordering behavior. These insights help optimize resource allocation, reduce costs, and identify high-growth opportunities.
+
+In **Approach #1**, Tyler applies PAM clustering with Gower’s Distance to segment customers based on purchasing behavior, handling mixed data types and assigning missing clusters using KNN, Centroid Matching, and Random Assignment. A Random Forest model is then trained to predict high-value orders, leveraging customer attributes, clustering results, and neighbor-based features, with SMOTE balancing and hyperparameter tuning optimizing performance.
+
+# Data Preparation
+
+## Approach to Wrangling
+
+The dataset undergoes aggregation, merging, and transformation to optimize it for PAM clustering with Gower’s Distance and Random Forest classification.
+
+First, key numerical and categorical features are selected, with categorical variables encoded and missing values imputed ("999" for categorical, median values for numerical). Data is aggregated at the customer-year level, calculating total and average order values, and deriving customer tenure from the difference between the latest transaction date and first recorded delivery. To maintain consistency, a mode function (get_mode) is applied to categorical variables such as trade channel, sub-trade channel, order type, and local market partner status, ensuring representative values for each customer. The resulting dataset, customer_full_summary, merges customer transaction summaries with these aggregated categorical features.
+
+To incorporate local market dynamics, customer_full_summary is merged with customer_neighbor_fields, adding neighbor-based attributes such as average order transactions, return frequency, primary group distribution, and geospatial attributes (latitude, longitude, zip code). These additional features enhance segmentation and predictive modeling by capturing regional purchasing patterns.
+
+Additionally, a Local Market Partner (LMP) subset is created by filtering customers who purchase only fountain drinks while excluding CO2, cans, and bottles (local_market_partner = 1 and co2_customer = 0). This segmentation allows for a more targeted analysis of smaller, high-frequency purchasers.
+
+To further optimize the dataset, all data is converted into an efficient data.table format for faster querying and merging. A stratified sample of 2,000 customer-year pairs ensures balanced representation across different customer segments. These enhancements ensure that both PAM clustering and Random Forest classification operate on clean, structured, and feature-rich data, improving customer segmentation and high-value order prediction across all customer groups, including Local Market Partners.
+
+
+## Libraries & Data
+
+We begin by setting up our session with the necessary libraries and data provided by Swire. These will be referenced often throughout this document.
+
+```{r setup, include=FALSE, warning = FALSE, message = FALSE}
+
+library('tidyverse')  # Data wrangling & visualization
+library('data.table')
+library('gt')         # Create professional tables
+library('janitor')    # Clean column names & messy data
+library('psych')      # Descriptive stats & psych research tools
+library('stringr')    # String manipulation
+library('lubridate')  # Handle dates & times
+library('rmarkdown')  # Render R Markdown docs
+library('dplyr')      # Data manipulation (filter, select, mutate, etc.)
+library('skimr')      # Quick summary stats
+library('tidyr')      # Reshape/tidy data
+library('readxl')     # Read Excel files
+library('ggplot2')    # Data visualization
+library('readr')      # Read/write CSV & text files
+library('knitr')      # Generate dynamic reports
+library('leaflet')    # Generate dynamic map
+library('dbscan')      # Density-based clustering
+library('dendextend')  # Extends dendrogram functionality
+library('caret')       # Machine learning and model training
+library('Matrix')      # Sparse and dense matrix operations
+library('parallel')    # Parallel computing
+library('glmnet')      # Lasso and ridge regression
+library('xgboost')     # Gradient boosting machine learning
+library('randomForest')# Random forest classifier
+library('fastDummies') # One-hot encoding for categorical variables
+library('ROSE')        # Oversampling and undersampling for imbalanced data
+library('smotefamily') # SMOTE for class imbalance
+library('cluster')     # Clustering algorithms
+library('factoextra')  # Extract and visualize clustering results
+library('data.table')  # Fast data manipulation
+library('FNN')         # Fast nearest neighbors
+library('kableExtra')  # Enhancements for tables in Markdown/HTML reportslibrary(Cairo)
+library('Cairo')       # Ensures sharper, more professional-looking graphics in Markdown/HTML reports and printed documents
+library('geosphere')
+library("tidymodels") # Used for its modeling framework
+library("tidyclust")  # Used for clustering approaches
+library("kernlab")    # Weighted kernal k-means)
+library('tibble')
+library('Metrics')
+
+getwd()
+setwd("C:/Users/Tyler.Swanson/OneDrive - PDQ.com/Documents/University of Utah - MSBA/Spring 2025/IS 6813 - MSBA Capstone Case Comp/delivery-standardization-group")
+```
+
+
+```{r}
+# Read files into session
+transactions <- as.data.frame(data.table::fread("data/transactional_data.csv"))
+customer_address <- read.csv("data/customer_address_and_zip_mapping.csv")
+customer_profile <- read.csv("data/customer_profile.csv")
+delivery_cost <- readxl::read_xlsx('data/delivery_cost_data.xlsx')
+
+customer_neighbor_fields <- as.data.table(data.table::fread("data/customer_neighbor_fields.csv"))
+customer_neighbor_fields[, customer_number := as.character(customer_number)]
+```
+
+
+
+```{r include = FALSE}
+
+# Branding colors
+swire_colors <- list(
+  "red" = "#cd0720", 
+  "blue" = "#005398", 
+  "gray" = "#f2f2f2"
+)
+
+# {ggplot2} theme for Swire
+theme_swire <- function() {
+    theme(
+    plot.title.position = "plot", 
+
+    plot.background = element_rect(fill = "white", color = NA), 
+    panel.background = element_rect(fill = swire_colors$gray, color = NA), 
+
+    plot.title = element_text(color = swire_colors$red, face = "bold", family = "Poppins"), 
+    plot.subtitle = element_text(face = "italic", family = "Poppins"), 
+    axis.title = element_text(face = "bold", family = "Poppins"), 
+    axis.text = element_text(family = "Poppins"), 
+
+    strip.background = element_rect(fill = swire_colors$blue, color = NA), 
+    strip.text = element_text(color = "white", face = "bold")
+  )
+}
+```
+
+
+## Wrangling steps
+
+### Prepping the Cost Data
+
+```{r eval = FALSE}
+delivery_cost_expanded <- 
+    delivery_cost |>
+    # Split the volume range into an object
+    mutate(
+        range_obj = purrr::map(`Vol Range`, str_split, " - ")
+    ) |>
+    # Unnest the object for individual reference
+    unnest(range_obj) |>
+    unnest_wider(range_obj, names_sep = "_") |>
+    # Handle the "1350+" scenario
+    mutate(
+        min_vol = purrr::map_chr(range_obj_1, str_replace, "\\+", ""), 
+        max_vol  = ifelse(is.na(range_obj_2), (2^31) - 1, range_obj_2)
+    ) |>
+    # Turn volumes from charaters to integers
+    mutate(
+        across(min_vol:max_vol, as.integer)
+    ) |>
+    # Drop irrelevant columns
+    select(-c(range_obj_1, range_obj_2, `Vol Range`))
+```
+
+```{r eval = FALSE}
+annual_cust_volume <-
+    # Take transaction level data
+    transactions |>
+    # Bring in the customer profile for the `Cold Drink Channel`
+    inner_join(
+        customer_profile, 
+        join_by(CUSTOMER_NUMBER)
+    ) |>
+    # Get annual cases/gallons by customer
+    group_by(YEAR, CUSTOMER_NUMBER, COLD_DRINK_CHANNEL) |>
+    summarise(
+        annual_cases = sum(DELIVERED_CASES), 
+        annual_gallons = sum(DELIVERED_GALLONS), 
+        .groups = "drop"
+    )
+```
+
+```{r eval = FALSE}
+delivery_cost_tiers <-
+    annual_cust_volume |>
+    left_join(
+        delivery_cost_expanded |> filter(`Applicable To` != 'Fountain'), 
+        join_by(COLD_DRINK_CHANNEL == `Cold Drink Channel`, annual_cases >= min_vol, annual_cases <= max_vol)
+    ) |>
+    left_join(
+        delivery_cost_expanded |> filter(`Applicable To` == 'Fountain'), 
+        join_by(COLD_DRINK_CHANNEL == `Cold Drink Channel`, annual_gallons >= min_vol, annual_gallons <= max_vol), 
+        suffix = c(".c", ".g")
+    ) |>
+    select(
+        YEAR, CUSTOMER_NUMBER, 
+        case_delivery_cost = `Median Delivery Cost.c`, 
+        gallon_delivery_cost = `Median Delivery Cost.g`
+    )
+
+# Take a peek
+head(delivery_cost_tiers)
+```
+
+
+### Prep the Customer Address Object
+
+```{r eval = FALSE}
+cust_addr_expanded <-
+    customer_address |>
+    # Split the full address into an object
+    mutate(
+        addr_obj = purrr::map(full.address, str_split, ",")
+    ) |>
+    # Unnest the object for individual reference
+    unnest(addr_obj) |>
+    unnest_wider(addr_obj, names_sep = "_") |>
+    # Pad the zip code with leading zeros and make a character
+    mutate(
+        zip = str_pad(zip, 5, "left", pad = "0")
+    ) |>
+    # Rename columns
+    rename(
+        city = addr_obj_2, 
+        state = addr_obj_3, 
+        state_abbr = addr_obj_4, 
+        county = addr_obj_5, 
+        lat = addr_obj_7, 
+        lon = addr_obj_8
+    ) |>
+    # Turn lat/lon values to numeric
+    mutate(
+        across(lat:lon, as.numeric)
+    ) |>
+    # Drop irrelevant columns
+    select(-c(full.address, addr_obj_1, addr_obj_6))
+```
+
+
+### Combine Individual Files
+
+```{r eval = FALSE}
+combined_data_raw <-
+    # Take transactions
+    transactions |>
+    # Join the customer profile data thereto
+    inner_join(
+        customer_profile |> mutate(zip = str_pad(
+            ZIP_CODE, 5, "left", "0"
+        )), 
+        join_by(CUSTOMER_NUMBER)
+    ) |>
+    # Join the customer address data thereto
+    inner_join(
+        cust_addr_expanded, 
+        join_by(zip)
+    ) |>
+    # Join the delivery cost tiers data thereto
+    inner_join(
+        delivery_cost_tiers, 
+        join_by(YEAR, CUSTOMER_NUMBER)
+    )
+```
+
+
+### Standardize Names & Data Types
+
+```{r eval = FALSE}
+combined_data_std <- 
+    # Take the combined data from above
+    combined_data_raw |>
+    # Standardize the names
+    clean_names() |>
+    # Standardize data types
+    mutate(
+        # Convert charater dates to date types
+        across(c(transaction_date, first_delivery_date, on_boarding_date), lubridate::mdy), 
+        # Turn IDs into characters
+        across(c(customer_number, primary_group_number), as.character), 
+        # Turn finite categorical fields into factors
+        across(
+            c(order_type, cold_drink_channel, frequent_order_type, trade_channel, sub_trade_channel, state, state_abbr), 
+            as.factor
+        )
+    ) |>
+    # Remove irrelevant columns
+    select(-c(zip_code))
+```
+
+
+### Enrich Dataset with New Fields
+
+```{r eval = FALSE}
+swire_data_full <-
+    combined_data_std |>
+    # Add new fields
+    mutate(
+        # Calculate delivered gallons cost
+        # Assume a return is only half as costly as a normal delivery
+        delivered_gallons_cost = case_when(
+            delivered_gallons < 0 ~ -1 * delivered_gallons * gallon_delivery_cost / 2, 
+            TRUE ~ delivered_gallons * gallon_delivery_cost
+        ), 
+        # Calculate delivered case cost
+        # Assume a return is only half as costly as a normal delivery
+        delivered_cases_cost = case_when(
+            delivered_cases < 0 ~ -1 * delivered_cases * case_delivery_cost / 2, 
+            TRUE ~ delivered_cases * case_delivery_cost
+        ),
+        # Create 'total' columns representing the sum of gallons & cases
+        ordered_total = ordered_gallons + ordered_cases, 
+        loaded_total = loaded_gallons + loaded_cases, 
+        delivered_total = delivered_gallons + delivered_cases, 
+    ) |>
+    group_by(year, primary_group_number) |>
+    mutate(
+        # Calculate number of customers belonging to each primary group by year
+        primary_group_customers = ifelse(is.na(primary_group_number), 0, n_distinct(customer_number))
+    ) |>
+    group_by(year, customer_number) |>
+    mutate(
+        # Calculate how often a customer issues a return each year
+        return_frequency = sum(ifelse(delivered_cases < 0 | delivered_gallons < 0, 1, 0))
+    ) |>
+    ungroup() |>
+    # Drop select columns that are no longer relevant
+    select(-c(gallon_delivery_cost, case_delivery_cost)) |>
+    # Order the columns logically
+    select(
+        # CUSTOMER PROFILE ITEMS
+        customer_number, primary_group_number, primary_group_customers, 
+        on_boarding_date, first_delivery_date, cold_drink_channel, frequent_order_type, trade_channel, sub_trade_channel, local_market_partner, co2_customer, city, zip, state, state_abbr, county, lat, lon, 
+        
+        # TRANSACTION DETAILS
+        transaction_date, week, year, order_type, 
+        ordered_cases, loaded_cases, delivered_cases, delivered_cases_cost, 
+        ordered_gallons, loaded_gallons, delivered_gallons, delivered_gallons_cost, 
+        ordered_total, loaded_total, delivered_total, 
+        return_frequency
+    )
+```
+
+### Final Data Set
+
+```{r include = FALSE}
+swire_data_full <- readRDS('data/swire_data_full.Rds')
+```
+
+```{r swire_data_full}
+glimpse(swire_data_full)
+```
+
+Now, we have a single, standardized data set that is enriched, properly formatted, and well-suited to the remaining analysis.
+
+
+# Modeling Approaches
+
+## Approach 1: Tyler
+
+### Data Preparation
+
+The dataset undergoes aggregation, merging, and transformation to optimize it for PAM clustering with Gower’s Distance and Random Forest classification.
+
+First, key numerical and categorical features are selected, with categorical variables encoded and missing values imputed ("999" for categorical, median values for numerical). Data is aggregated at the customer-year level, calculating total and average order values, and deriving customer tenure from the difference between the latest transaction date and first recorded delivery. To maintain consistency, a mode function (get_mode) is applied to categorical variables such as trade channel, sub-trade channel, order type, and local market partner status, ensuring representative values for each customer. The resulting dataset, customer_full_summary, merges customer transaction summaries with these aggregated categorical features.
+
+To incorporate local market dynamics, customer_full_summary is merged with customer_neighbor_fields, adding neighbor-based attributes such as average order transactions, return frequency, primary group distribution, and geospatial attributes (latitude, longitude, zip code). These additional features enhance segmentation and predictive modeling by capturing regional purchasing patterns.
+
+Additionally, a Local Market Partner (LMP) subset is created by filtering customers who purchase only fountain drinks while excluding CO2, cans, and bottles (local_market_partner = 1 and co2_customer = 0). This segmentation allows for a more targeted analysis of smaller, high-frequency purchasers.
+
+To further optimize the dataset, all data is converted into an efficient data.table format for faster querying and merging. A stratified sample of 2,000 customer-year pairs ensures balanced representation across different customer segments. These enhancements ensure that both PAM clustering and Random Forest classification operate on clean, structured, and feature-rich data, improving customer segmentation and high-value order prediction across all customer groups, including Local Market Partners.
+
+### Model Insight
+
+**Clustering with PAM and Gower’s Distance**
+
+Customers are segmented based on purchasing behavior and attributes to enhance predictive modeling. Key numerical and categorical variables are selected, categorical features are encoded, and missing values are imputed using medians. Since the dataset includes mixed data types, Gower’s Distance is computed to measure similarity, followed by PAM clustering to create nine clusters (k = 9). Customers outside the initial 2,000 sampled dataset are assigned clusters using K-Nearest Neighbors (KNN), centroid matching, or random assignment. Cluster quality is assessed using Multidimensional Scaling (MDS) and Silhouette Scores (Avg. Silhouette Width = 0.44), confirming meaningful segmentation..
+
+**Predicting High-Value Orders with Random Forest**
+
+The second stage involves predicting high-value orders (order_over_500) using Random Forest, incorporating transaction history, customer attributes, clustering results, and neighbor-based features. The dataset is split 80/20 into training and testing sets, and SMOTE (Synthetic Minority Oversampling) from the ROSE package is applied to balance the dataset. Hyperparameter tuning (tuneRF()) optimizes the mtry value to 6, ensuring the best number of features for each split.
+
+A separate model is developed for Local Market Partners (LMPs) to analyze order behaviors among customers who purchase only fountain drinks, excluding CO2, cans, and bottles. This targeted segmentation enhances the relevance of predictive modeling for different customer groups.
+
+The Random Forest model for all customers demonstrated strong predictive performance, achieving 88.65% accuracy, 76.8% precision, and 72.1% recall in predicting high-value orders. The balanced accuracy of 83.12% indicates that the model effectively differentiates between high and low-value orders. Feature importance analysis highlights customer cluster assignment, tenure, trade channel, order type, and neighbor-based attributes as key predictors, reinforcing the effectiveness of PAM clustering in improving segmentation. Additionally, SMOTE successfully balanced the dataset, reducing bias toward majority-class customers and improving classification performance.
+
+The Local Market Partner (LMP) Random Forest model (200 trees) achieved even stronger predictive performance, with 90.19% accuracy, 94.83% sensitivity, and 72.4% specificity, demonstrating its ability to correctly classify high-value LMP customers. Similar to the all customer data set model, key predictors in the LMP model included customer segmentation (PAM clustering), tenure, trade channel, and neighbor-based attributes.
+
+### Future Improvements
+
+While the models perform well, several enhancements could further improve their predictive accuracy and robustness. Advanced hyperparameter tuning, such as grid search or Bayesian optimization, could refine the Random Forest parameters beyond the current mtry = 6 selection. Additionally, exploring alternative machine learning models, such as XGBoost or LightGBM, may enhance performance by capturing more complex relationships in the data. Adjusting the classification threshold could help balance precision and recall, reducing false negatives while maintaining accuracy. Further, incorporating additional features, such as seasonality trends, customer engagement metrics, or external market data, could strengthen the model’s predictive power. Finally, deploying the model in a real-world environment with ongoing monitoring and periodic retraining would ensure adaptability to evolving customer behaviors and market conditions.
+
+
+### Step: Aggregate Customer Order Data by Year
+
+```{r Aggregating Customer Order Data}
+
+# Aggregate data by customer_number and year
+customer_order_summary_by_year <- swire_data_full %>%
+  group_by(customer_number, year) %>%
+  summarise(
+    combined_ordered_total = sum(ordered_total, na.rm = TRUE),
+    average_order = mean(ordered_total, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# Check structure of the dataset
+str(customer_order_summary_by_year)
+
+```
+
+#### Create Comprehensive Customer Dataset 
+
+Aggregate and Merge swire_data_full, customer_order_summary_by_year, swire_data_mode, swire_data_selected, and customer_neighbor_fields to create customer_full_summary
+
+```{r Aggregated Dataset }
+
+# Function to get the most common (mode) value for categorical fields
+get_mode <- function(x) {
+  x <- na.omit(x) # Remove NAs
+  if(length(x) == 0) return(NA) # Return NA if empty
+  unique_x <- unique(x)
+  unique_x[which.max(tabulate(match(x, unique_x)))]
+}
+
+# Aggregate swire_data_full to find the most common value for each categorical feature per customer
+swire_data_mode <- swire_data_full %>%
+  group_by(customer_number) %>%
+  summarise(
+    primary_group_number = get_mode(primary_group_number),
+    cold_drink_channel = get_mode(cold_drink_channel),
+    frequent_order_type = get_mode(frequent_order_type),
+    trade_channel = get_mode(trade_channel),
+    sub_trade_channel = get_mode(sub_trade_channel),
+    local_market_partner = get_mode(local_market_partner),
+    co2_customer = get_mode(co2_customer),
+    city = get_mode(city),
+    state = get_mode(state),
+    state_abbr = get_mode(state_abbr),
+    county = get_mode(county),
+    order_type = get_mode(order_type),
+    .groups = "drop"
+  )
+
+# Merge with customer_order_summary_by_year
+customer_full_summary <- customer_order_summary_by_year %>%
+  left_join(swire_data_mode, by = "customer_number")
+
+# Replace NA primary_group_number with "999"
+customer_full_summary <- customer_full_summary %>%
+  mutate(primary_group_number = ifelse(is.na(primary_group_number), "999", primary_group_number))
+
+# Add a binary column order_over_500
+customer_full_summary <- customer_full_summary %>%
+  mutate(order_over_500 = ifelse(combined_ordered_total > 500, 1, 0))
+
+# Add a binary column order_over_400
+customer_full_summary <- customer_full_summary %>%
+  mutate(order_over_400 = ifelse(combined_ordered_total > 400, 1, 0))
+
+# Add a binary column order_over_600
+customer_full_summary <- customer_full_summary %>%
+  mutate(order_over_600 = ifelse(combined_ordered_total > 600, 1, 0))
+
+# Add a binary column order_under_100
+customer_full_summary <- customer_full_summary %>%
+  mutate(order_under_100 = ifelse(combined_ordered_total < 100, 1, 0)) 
+
+# Aggregate missing columns to remove duplicates
+swire_data_selected <- swire_data_full %>%
+  group_by(customer_number) %>%
+  summarise(
+    primary_group_customers = max(primary_group_customers, na.rm = TRUE),
+    on_boarding_date = min(on_boarding_date, na.rm = TRUE),  # Earliest onboarding date
+    first_delivery_date = min(first_delivery_date, na.rm = TRUE),  # Earliest delivery date
+    zip = get_mode(zip),
+    lat = mean(lat, na.rm = TRUE),  # Average latitude
+    lon = mean(lon, na.rm = TRUE),  # Average longitude
+    transaction_date = max(transaction_date, na.rm = TRUE),  # Latest transaction
+    week = get_mode(week),
+    return_frequency = mean(return_frequency, na.rm = TRUE),  # Average return frequency
+    .groups = "drop"
+  )
+
+# Merge deduplicated data with customer_full_summary
+customer_full_summary <- customer_full_summary %>%
+  left_join(swire_data_selected, by = "customer_number")
+
+customer_full_summary <- customer_full_summary %>%
+  mutate(customer_tenure = as.numeric(difftime(transaction_date, first_delivery_date, units = "weeks")) / 52)
+
+# Check structure of the dataset
+# str(customer_full_summary)
+```
+
+#### Merge Neighbor Dataset 
+
+Merge customer_neighbor_fields to customer_full_summary
+
+```{r ADD customer_neighbor_fields to customer_full_summary}
+
+# Convert data frames to data.tables
+customer_full_summary <- as.data.table(customer_full_summary)
+
+# Ensure customer_number is character before merging
+customer_full_summary[, customer_number := as.character(customer_number)]
+# customer_neighbor_fields[, customer_number := as.character(customer_number)]
+
+# Merge customer_neighbor_fields into customer_full_summary
+customer_full_summary <- merge(customer_full_summary, 
+                               customer_neighbor_fields, 
+                               by = "customer_number", 
+                               all.x = TRUE)
+
+# Check structure after merging
+ str(customer_full_summary)
+```
+
+
+### Modeling
+
+#### PAM Clustering with Gower’s Distance
+
+```{r PAM Clustering with Gower’s Distance}
+
+# Make a copy of the dataset 
+CLARA <- customer_full_summary 
+
+# Select Key Features for CLARA Clustering in R
+clustering_data <- CLARA %>%
+  select(customer_number, year, primary_group_number, cold_drink_channel, trade_channel)
+
+# frequent_order_type
+
+# Preprocess Data for CLARA Clustering - Encoding Categorical Variables
+clustering_data <- clustering_data %>%
+  mutate(across(where(is.character) & !all_of("customer_number"), as.factor)) %>%  # Exclude customer_number
+  mutate(across(where(is.factor), as.numeric))  # Convert factors to numeric encoding
+
+
+# Impute missing values with column medians (instead of dropping them)
+clustering_data <- clustering_data %>%
+  mutate(across(where(is.numeric), ~replace_na(., median(., na.rm = TRUE))))
+
+# Set Seed 
+set.seed(123)  # Ensure reproducibility
+
+# Convert to data.table for efficient sampling
+clustering_data <- as.data.table(clustering_data)
+
+# Make sure `customer_number` is character for correct merging
+clustering_data[, customer_number := as.character(customer_number)]
+
+# Sample **2000 unique customer-year pairs** (ensure correct format)
+clustering_sample <- clustering_data[, .SD[sample(.N, min(.N, 2000))], by = year]
+
+# Compute Gower’s Distance using daisy() for mixed data clustering
+gower_dist <- daisy(clustering_sample %>% select(-customer_number, -year), metric = "gower")
+
+# PAM Clustering with Gower's Distance
+set.seed(123)
+PAM_result <- pam(gower_dist, k = 9)  # Using PAM instead of CLARA
+
+# Assign clusters to the sampled dataset
+clustering_sample$cluster <- as.factor(PAM_result$clustering)
+
+# Convert datasets to data.table for efficient merging
+CLARA <- as.data.table(CLARA)
+clustering_sample <- as.data.table(clustering_sample)
+
+# Ensure `customer_number` is character in both datasets for merging
+CLARA[, customer_number := as.character(customer_number)]
+clustering_sample[, customer_number := as.character(customer_number)]
+
+# Merge assigned clusters back into the full dataset
+CLARA <- merge(
+  CLARA,
+  clustering_sample[, .(customer_number, year, cluster)], 
+  by = c("customer_number", "year"), 
+  all.x = TRUE
+)
+
+# Assign missing clusters using Nearest Neighbor Matching (KNN)
+missing_customers <- CLARA[is.na(cluster), ]
+non_missing_customers <- CLARA[!is.na(cluster), ]
+
+if (nrow(non_missing_customers) > 0 & nrow(missing_customers) > 0) {
+  knn_result <- knn(
+    train = non_missing_customers %>% select(combined_ordered_total, average_order, return_frequency, customer_tenure),
+    test = missing_customers %>% select(combined_ordered_total, average_order, return_frequency, customer_tenure),
+    cl = non_missing_customers$cluster,
+    k = min(5, nrow(non_missing_customers))  # Prevents errors if fewer than 5 observations
+  )
+  
+  # Assign predicted clusters to missing customers
+  CLARA[is.na(cluster), cluster := knn_result]
+}
+
+# Compute Cluster Centroids for Missing Cluster Assignment
+if (nrow(CLARA[is.na(cluster),]) > 0 & nrow(non_missing_customers) > 0) {
+  # Compute cluster centroids
+  cluster_centers <- non_missing_customers %>%
+    group_by(cluster) %>%
+    summarise(across(c(combined_ordered_total, average_order, return_frequency, customer_tenure), mean))
+
+  # Assig Missing Clusters Using Nearest Centroid Matching
+  CLARA[is.na(cluster), cluster := apply(
+    CLARA[is.na(cluster), .(combined_ordered_total, average_order, return_frequency, customer_tenure)], 
+    1, 
+    function(x) {
+      distances <- apply(cluster_centers[, -1], 1, function(centroid) sum((x - centroid)^2, na.rm = TRUE))
+      return(cluster_centers$cluster[which.min(distances)])  # Assign to closest centroid
+    }
+  )]
+}
+
+# Randomly Assigning Missing Clusters from Available Clusters
+available_clusters <- unique(CLARA$cluster[!is.na(CLARA$cluster)])
+
+if (length(available_clusters) > 0 & nrow(CLARA[is.na(cluster),]) > 0) {
+  CLARA[is.na(cluster), cluster := sample(available_clusters, nrow(CLARA[is.na(cluster),]), replace = TRUE)]
+}
+
+# Preform Multidimensional Scaling (MDS) on Gower’s Distance Matrix
+mds_data <- cmdscale(as.dist(gower_dist), k = 2)  # Convert Gower’s distance into 2D space
+
+# Create a dataframe for plotting
+cluster_plot_data <- as.data.frame(mds_data)
+cluster_plot_data$cluster <- PAM_result$clustering  # Assign cluster labels
+
+# Visualize the Clusters
+# ggplot(cluster_plot_data, aes(V1, V2, color = as.factor(cluster))) +
+#  geom_point(alpha = 0.7, size = 3) +
+#  labs(title = "PAM Clustering with Gower’s Distance",
+#       x = "MDS Dimension 1",
+#       y = "MDS Dimension 2",
+#       color = "Cluster") +
+#  theme_minimal()
+
+library(ggplot2)
+
+ggplot(cluster_plot_data, aes(V1, V2, color = as.factor(cluster))) +
+  geom_point(alpha = 0.7, size = 3) +
+  labs(title = "PAM Clustering with Gower’s Distance",
+       x = "MDS Dimension 1",
+       y = "MDS Dimension 2",
+       color = "Cluster") +
+  theme_minimal()
+
+
+# Verify that Every Customer has a Cluster
+table(is.na(CLARA$cluster))  # Should return only FALSE
+
+# str(CLARA)
+# head(CLARA)
+ 
+# Convert gower_dist to a 'dist' object if necessary
+# if (!inherits(gower_dist, "dist")) {
+# gower_dist <- as.dist(gower_dist)
+# }
+ 
+#  Calculate silhouette scores using Gower's distance and cluster assignments
+# silhouette_score <- silhouette(PAM_result$clustering, gower_dist)
+
+# Print average silhouette width (higher is better)
+# cat("Average silhouette width:", mean(silhouette_score[, 3]), "\n")
+
+# Visualize the silhouette plot
+# plot(silhouette_score, main = "Silhouette Plot for PAM Clustering")
+
+# K = 9
+# Average silhouette width: 0.439543
+
+```
+
+
+$ order_over_500         : num  0 0 1 0 0 0 0 0 1 1 ...
+ 
+ $ primary_group_number   : chr  "999" "999" "999" "999" ...
+ $ cold_drink_channel     : Factor w/ 9 levels "ACCOMMODATION",..: 5 5 4 4 6 6 5 5 4 4 ...
+ $ frequent_order_type    : Factor w/ 6 levels "CALL CENTER",..: 6 6 5 5 1 1 5 5 5 5 ...
+ $ trade_channel          : Factor w/ 26 levels "ACADEMIC INSTITUTION",..: 18 18 8 8 23 23 18 18 15 15 ...
+ $ sub_trade_channel      : Factor w/ 48 levels "ASIAN FAST FOOD",..: 36 36 42 42 29 29 36 36 34 34 ...
+ $ local_market_partner   : logi  TRUE TRUE TRUE TRUE TRUE TRUE ...
+ $ co2_customer           : logi  TRUE TRUE TRUE TRUE FALSE FALSE ...
+ $ city                   : chr  "Marysville" "Marysville" "Cecilton" "Cecilton" ...
+ $ order_type             : Factor w/ 7 levels "CALL CENTER",..: 7 7 3 3 1 1 1 1 3 3 ...
+ $ primary_group_customers: num  0 0 0 0 11 11 0 0 0 0 ...
+ $ return_frequency       : num  0.773 0.773 0 0 0 ...
+ $ customer_tenure        : num  6.7 6.7 6.48 6.48 1.79 ...
+ $ cluster                : Factor w/ 4 levels "1","2","3","4": 1 1 1 1 3 3 1 1 2 1 ..
+ 
+ 
+ 
+ $ average_order          : num  13.7 22.6 13.1 28.4 3.5 ...
+ $ combined_ordered_total : num  370 383.5 591.5 482 17.5 ...
+ $ customer_number        : chr  "500245678" "500245678" "500245685" "500245685" ...
+
+
+#### Local Market Partners: SMOTE-enhanced Random Forest model with hyperparamter tuning Over 500
+
+```{r lmp_smote_rf_tuning, echo=FALSE}
+
+# Filter CLARA dataset to include only Local Market Partners (LMP)
+CLARA_LMP <- CLARA %>%
+  filter(local_market_partner == 1 & co2_customer == 0)
+
+# Save the dataset for further analysis
+write.csv(CLARA_LMP, "CLARA_LMP.csv", row.names = FALSE)
+
+# Check the structure and preview the dataset
+str(CLARA_LMP)
+# head(CLARA_LMP)
+
+# Convert categorical variables to factors
+categorical_vars <- c("primary_group_number", "cold_drink_channel", "frequent_order_type",
+                      "trade_channel", "sub_trade_channel", "order_type", "cluster")
+
+CLARA_LMP[, (categorical_vars) := lapply(.SD, as.factor), .SDcols = categorical_vars]
+
+# Convert logical variables to numeric (TRUE/FALSE -> 1/0)
+CLARA_LMP[, local_market_partner := as.numeric(local_market_partner)]
+CLARA_LMP[, co2_customer := as.numeric(co2_customer)]
+
+# Handle high-cardinality categorical features by integer encoding
+for (col in categorical_vars) {
+  if (nlevels(CLARA_LMP[[col]]) > 53) {
+    CLARA_LMP[[col]] <- as.integer(as.factor(CLARA_LMP[[col]]))  # Convert to numeric encoding
+  }
+}
+
+features <- c("primary_group_number", "cold_drink_channel", "frequent_order_type",
+              "trade_channel", "sub_trade_channel",# "order_type", "primary_group_customers",
+              "return_frequency", "customer_tenure", "cluster", 
+              "neighbor_avg_dist_km", "neighbor_primary_group_count", "neighbor_local_market_partners", "neighbor_avg_return_freq",
+              "neighbor_avg_order_transactions_2024", "neighbor_avg_order_transaction_std_2024", "neighbor_avg_ordered_total_2024")
+
+# Prepare dataset
+df <- CLARA_LMP[, c(features, "order_over_500"), with = FALSE]
+df$order_over_500 <- as.factor(df$order_over_500)  # Convert target to factor
+
+# Split dataset into train and test sets
+set.seed(42)
+trainIndex <- createDataPartition(df$order_over_500, p = 0.8, list = FALSE)
+train_data <- df[trainIndex, ]
+test_data <- df[-trainIndex, ]
+
+# Apply SMOTE using the ROSE package
+train_data_balanced <- ovun.sample(order_over_500 ~ ., data = train_data, method = "over", p = 0.5, seed = 42)$data
+
+# Hyperparameter tuning using tuneRF()
+set.seed(42)
+best_mtry <- tuneRF(train_data_balanced[, -which(names(train_data_balanced) == "order_over_500")], 
+                    train_data_balanced$order_over_500, 
+                    stepFactor = 1.5, improve = 0.01, trace = TRUE, plot = FALSE)
+
+# Select best mtry value
+optimal_mtry <- best_mtry[which.min(best_mtry[, 2]), 1]
+cat("Optimal mtry value:", optimal_mtry, "\n")
+
+# Train Optimized Random Forest Model
+set.seed(42)
+rf_model_lmp <- randomForest(order_over_500 ~ ., data = train_data_balanced, 
+                         ntree = 200,  # Increased trees for better accuracy
+                         mtry = optimal_mtry, 
+                         importance = TRUE)
+
+
+# Predictions on test data
+predictions <- predict(rf_model_lmp, test_data)
+
+# Model Evaluation
+conf_matrix <- confusionMatrix(predictions, test_data$order_over_500)
+print(conf_matrix)
+
+# Feature Importance
+importance(rf_model_lmp)
+varImpPlot(rf_model_lmp)
+```
+
+#### ALL Customers: SMOTE-enhanced Random Forest model with hyperparamter tuning Over 500
+
+```{r smote_rf_tuning, echo=FALSE}
+
+# Convert categorical variables to factors
+categorical_vars <- c("primary_group_number", "cold_drink_channel", # "frequent_order_type",
+                      "trade_channel", "sub_trade_channel", "order_type", "cluster")
+
+CLARA[, (categorical_vars) := lapply(.SD, as.factor), .SDcols = categorical_vars]
+
+# Convert logical variables to numeric (TRUE/FALSE -> 1/0)
+CLARA[, local_market_partner := as.numeric(local_market_partner)]
+CLARA[, co2_customer := as.numeric(co2_customer)]
+
+# Handle high-cardinality categorical features by integer encoding
+for (col in categorical_vars) {
+  if (nlevels(CLARA[[col]]) > 53) {
+    CLARA[[col]] <- as.integer(as.factor(CLARA[[col]]))  # Convert to numeric encoding
+  }
+}
+
+features <- c("primary_group_number", "cold_drink_channel", # "frequent_order_type",
+              "trade_channel", "sub_trade_channel", "local_market_partner",
+              "co2_customer", "order_type", "primary_group_customers",
+              "cluster", # "return_frequency", "customer_tenure, "
+              "neighbor_avg_dist_km", "neighbor_primary_group_count", "neighbor_local_market_partners", "neighbor_avg_return_freq",
+              "neighbor_avg_order_transactions_2024", "neighbor_avg_order_transaction_std_2024", "neighbor_avg_ordered_total_2024")
+
+
+# Prepare dataset
+df <- CLARA[, c(features, "order_over_500"), with = FALSE]
+df$order_over_500 <- as.factor(df$order_over_500)  # Convert target to factor
+
+# Split dataset into train and test sets
+set.seed(42)
+trainIndex <- createDataPartition(df$order_over_500, p = 0.8, list = FALSE)
+train_data <- df[trainIndex, ]
+test_data <- df[-trainIndex, ]
+
+# Apply SMOTE using the ROSE package
+train_data_balanced <- ovun.sample(order_over_500 ~ ., data = train_data, method = "over", p = 0.5, seed = 42)$data
+
+# Hyperparameter tuning using tuneRF()
+set.seed(42)
+best_mtry <- tuneRF(train_data_balanced[, -which(names(train_data_balanced) == "order_over_500")], 
+                    train_data_balanced$order_over_500, 
+                    stepFactor = 1.5, improve = 0.01, trace = TRUE, plot = FALSE)
+
+# Select best mtry value
+optimal_mtry <- best_mtry[which.min(best_mtry[, 2]), 1]
+cat("Optimal mtry value:", optimal_mtry, "\n")
+
+# Train Optimized Random Forest Model
+set.seed(42)
+rf_model_500 <- randomForest(order_over_500 ~ ., data = train_data_balanced, 
+                         ntree = 200,  # Increased trees for better accuracy
+                         mtry = optimal_mtry, 
+                         importance = TRUE)
+
+
+# Predictions on test data
+predictions <- predict(rf_model_500, test_data)
+
+# Model Evaluation
+# conf_matrix <- confusionMatrix(predictions, test_data$order_over_500)
+# print(conf_matrix)
+
+# Model Evaluation
+conf_matrix_400 <- confusionMatrix(predictions, test_data$order_over_400)
+print(conf_matrix)
+
+# Feature Importance
+importance(rf_model_500)
+varImpPlot(rf_model_500)
+```
+
+#########################################################
+#########################################################
+
+```{r}
+assign_truck_group <- function(data) {
+  data %>%
+    mutate(
+      # Categorical combinations historically linked to high-value orders
+      high_perf_combo = trade_channel == "GENERAL RETAILER" & order_type == "EDI" & frequent_order_type == "SALES REP" |
+                        trade_channel == "BULK TRADE" & order_type == "SALES REP" & frequent_order_type == "SALES REP" |
+                        trade_channel == "RECREATION" & order_type == "EDI" & frequent_order_type %in% c("SALES REP", "OTHER") |
+                        trade_channel == "SUPERSTORE" & order_type == "EDI" & frequent_order_type %in% c("SALES REP", "EDI", "OTHER") |
+                        trade_channel == "TRAVEL" & order_type %in% c("SALES REP", "MYCOKE LEGACY") & frequent_order_type == "SALES REP" |
+                        trade_channel == "FAST CASUAL DINING" & order_type == "MYCOKE LEGACY" & frequent_order_type %in% c("MYCOKE LEGACY", "SALES REP", "OTHER") |
+                        trade_channel == "GENERAL" & order_type == "SALES REP" & frequent_order_type == "SALES REP",
+
+      # Final truck group assignment (based only on categorical combo logic)
+      truck_group = case_when(
+        high_perf_combo ~ "RED TRUCK",
+        TRUE ~ "WHITE TRUCK"
+      )
+    )
+}
+```
+
+
+```{r}
+library(dplyr)
+
+low_value_trade_channels <- CLARA_truck %>%
+  group_by(trade_channel) %>%
+  summarise(
+    total_customers = n(),
+    high_value_customers = sum(actual_high_value, na.rm = TRUE),
+    pct_high_value = high_value_customers / total_customers * 100,
+
+    # Overall average order total
+    avg_order_total = mean(ordered_total_2024, na.rm = TRUE),
+
+    # Max order total for high-value customers
+    max_high_order_total = max(ordered_total_2024[actual_high_value == 1], na.rm = TRUE),
+
+    # Max order total for low-value customers
+    max_low_order_total = max(ordered_total_2024[actual_high_value == 0], na.rm = TRUE)
+  ) %>%
+  filter(pct_high_value < 15) %>%
+  arrange(pct_high_value)
+
+print(low_value_trade_channels)
+
+
+CLARA_truck %>%
+  filter(trade_channel == "PROFESSIONAL SERVICES", actual_high_value == 1) %>%
+  arrange(desc(ordered_total_2024)) %>%
+  select(customer_number, ordered_total_2024, order_transactions_2024, avg_transaction_amt = ordered_total_2024 / order_transactions_2024)
+
+total_ordered_2024 <- CLARA_truck %>%
+  summarise(total_ordered = sum(ordered_total_2024, na.rm = TRUE))
+
+print(total_ordered_2024)
+
+# Create a small data frame for the 3 customers
+whale_customers <- data.frame(
+  customer_number = c("501118291", "501202275", "600081195"),
+  avg_transaction_amt = c(25716, 16710, 12929),
+  order_transactions_2024 = c(1, 1, 1)
+)
+
+# Calculate the average order amount
+whale_avg_order <- whale_customers %>%
+  summarise(avg_order = mean(avg_transaction_amt))
+
+print(whale_avg_order)
+
+
+CLARA_truck %>%
+  filter(customer_number == "501118291") %>%
+  summarise(total_orders = sum(order_transactions_2024, na.rm = TRUE))
+
+summarise(
+  orders_2023 = sum(order_transactions_2023, na.rm = TRUE),
+  orders_2024 = sum(order_transactions_2024, na.rm = TRUE),
+  total_orders = orders_2023 + orders_2024
+)
+
+
+swire_data_full %>%
+  filter(customer_number == "501118291") %>%
+  count(year)
+
+
+```
+
+
+
+######### RUN FUNCTION 
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Add logic flags (if not already added)
+CLARA_truck <- CLARA_truck %>%
+  mutate(
+    actual_high_value = order_over_400 == 1,
+    predicted_red_truck = truck_group == "RED TRUCK"
+  )
+
+# ---- Truck Group Summary by Median Metrics ----
+truck_group_summary <- CLARA_truck %>%
+  group_by(truck_group) %>%
+  summarise(
+    `Total Customers` = n(),
+    `Median Transaction Amount` = median(ordered_total_2024 / order_transactions_2024, na.rm = TRUE),
+    `High Value Order Rate (%)` = round(mean(actual_high_value) * 100, 1),
+    .groups = "drop"
+  )
+
+# Print to console
+print(truck_group_summary)
+
+# Also render as HTML (for reports/viewers)
+truck_group_summary %>%
+  kable("html", caption = "Summary of RED vs WHITE TRUCK Segmentation") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  column_spec(1, bold = TRUE)
+
+
+# ---- Model Evaluation Metrics ----
+metrics <- CLARA_truck %>%
+  summarise(
+    `RED TRUCK & High Value (TP)` = sum(predicted_red_truck & actual_high_value),
+    `RED TRUCK & Not High Value (FP)` = sum(predicted_red_truck & !actual_high_value),
+    `WHITE TRUCK & Not High Value (TN)` = sum(!predicted_red_truck & !actual_high_value),
+    `WHITE TRUCK & High Value Missed (FN)` = sum(!predicted_red_truck & actual_high_value)
+  ) %>%
+  mutate(
+    Accuracy = (`RED TRUCK & High Value (TP)` + `WHITE TRUCK & Not High Value (TN)`) /
+               (`RED TRUCK & High "Value (TP)` + `RED TRUCK & Not High Value (FP)` +
+                `WHITE TRUCK & Not "High Value (TN)` + `WHITE TRUCK & High Value Missed (FN)`),
+    Precision = `RED TRUCK & High Value (TP)` /
+                (`RED TRUCK & High Value (TP)` + `RED TRUCK & Not High Value (FP)`),
+    Recall = `RED TRUCK & High Value (TP)` /
+             (`RED TRUCK & High Value (TP)` + `WHITE TRUCK & High Value Missed (FN)`),
+    `F1 Score` = 2 * (Precision * Recall) / (Precision + Recall)
+  ) %>%
+  mutate(across(everything(), ~ round(.x, 3)))
+
+# Print to console
+print(metrics)
+
+# Also render as HTML table
+metrics %>%
+  kable("html", caption = "Truck Group Model Evaluation Metrics") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+
+```
+
+
+
+##########################################################
+##########################################################
+
+#### Visualize Top 10 Features 500
+```{r Visualize Top 10 Features}
+# Load required libraries
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+
+# Extract feature importance from the model
+importance_df_500 <- importance(rf_model_500) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Feature") %>%
+  arrange(desc(MeanDecreaseAccuracy))
+
+# Plot Top 10 Important Features
+top_10 <- importance_df_500[1:10, ]
+
+ggplot(top_10, aes(x = reorder(Feature, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Important Features for Predicting order_over_500",
+       x = "Feature",
+       y = "Mean Decrease in Accuracy") +
+  theme_minimal()
+
+# Create a styled table of top 10 features
+top_10_table <- top_10[, c("Feature", "MeanDecreaseAccuracy", "MeanDecreaseGini")]
+
+top_10_table %>%
+  kable(format = "html", caption = "Top 10 Most Important Features for Predicting High-Value Customers (order_over_500)", digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#0073C2FF")
+
+# MeanDecreaseAccuracy: measures how much the model's prediction accuracy decreases when a given feature is randomly permuted (shuffled)
+
+# MeanDecreaseGini: total decrease in node impurity (Gini Impurity) that results from splits on that feature, averaged over all trees in the forest
+
+
+```
+
+
+
+### Total Customers by High-Value Order Status (order_over_500)
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Summarize totals by order_over_500
+order_summary <- CLARA %>%
+  group_by(order_over_500) %>%
+  summarise(
+    total_customers = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    order_over_500 = ifelse(order_over_500 == 1, "High-Value (>500)", "Not High-Value (<= 500)"),
+    percent = round(100 * total_customers / sum(total_customers), 1)
+  )
+
+# Add grand total row
+order_summary <- bind_rows(
+  order_summary,
+  order_summary %>%
+    summarise(
+      order_over_500 = "Total",
+      total_customers = sum(total_customers),
+      percent = 100
+    )
+)
+
+# Display styled table
+order_summary %>%
+  kable("html",
+        caption = "Total Customers by High-Value Order Status (order_over_500)",
+        col.names = c("Order Status", "Customer Count", "% of Total")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white") %>%
+  row_spec(nrow(order_summary), background = "#f2f2f2", bold = TRUE)  # Highlight total row
+
+
+```
+
+
+### Total Customers by High-Value Order Status (order_over_500)
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Summarize totals by order_over_400
+order_summary <- CLARA %>%
+  group_by(order_over_400) %>%
+  summarise(
+    total_customers = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    order_over_400 = ifelse(order_over_400 == 1, "High-Value (>400)", "Not High-Value (<= 400)"),
+    percent = round(100 * total_customers / sum(total_customers), 1)
+  )
+
+# Add grand total row
+order_summary <- bind_rows(
+  order_summary,
+  order_summary %>%
+    summarise(
+      order_over_400 = "Total",
+      total_customers = sum(total_customers),
+      percent = 100
+    )
+)
+
+# Display styled table
+order_summary %>%
+  kable("html",
+        caption = "Total Customers by High-Value Order Status (order_over_400)",
+        col.names = c("Order Status", "Customer Count", "% of Total")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white") %>%
+  row_spec(nrow(order_summary), background = "#f2f2f2", bold = TRUE)  # Highlight total row
+
+
+```
+
+
+#### Visualize Top 10 Features 500
+```{r Visualize Top 10 Features}
+# Load ggplot2 if not already
+library(ggplot2)
+
+# Plot top 10 features
+top_10 <- importance_df_500[1:10, ]
+
+ggplot(top_10, aes(x = reorder(Feature, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Important Features for order_over_500",
+       x = "Feature",
+       y = "Mean Decrease in Accuracy") +
+  theme_minimal()
+
+# Load kableExtra and knitr
+ library(knitr)
+ library(kableExtra)
+
+# Extract and format top 10 features
+top_10_table <- importance_df_500[1:10, c("Feature", "MeanDecreaseAccuracy", "MeanDecreaseGini")]
+
+# Create a styled table
+top_10_table %>%
+  kable(format = "html", caption = "Top 10 Most Important Features for Predicting order_over_500", digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#0073C2FF")
+
+# MeanDecreaseAccuracy: measures how much the model's prediction accuracy decreases when a given feature is randomly permuted (shuffled)
+
+# MeanDecreaseGini: total decrease in node impurity (Gini Impurity) that results from splits on that feature, averaged over all trees in the forest
+
+
+```
+
+
+#### Cluster Breakdown 400
+```{r Cluster Breakdown}
+
+# Load required libraries
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Summarize high-value orders by cluster
+cluster_summary <- CLARA %>%
+  group_by(cluster) %>%
+  summarise(
+    Total_Customers = n(),
+    High_Value_Orders = sum(order_over_400 == 1),
+    Percent_High_Value = mean(order_over_400 == 1) * 100
+  ) %>%
+  arrange(desc(Percent_High_Value))
+
+# Create a styled HTML table
+cluster_summary %>%
+  kable(format = "html", caption = "High-Value Order Breakdown by Cluster", digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#0073C2FF")
+
+
+```
+
+# Top Categorical Combinations with Highest Probability of High-Value Orders 400
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_400 == 1)
+
+# Get all combinations with % high-value > 10%
+top_combos <- CLARA %>%
+  group_by(trade_channel, order_type, frequent_order_type, cluster) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_400 == 1),
+    pct_high_value = mean(order_over_400 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 10) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  filter(pct_high_value > 10) %>%
+  arrange(desc(pct_high_value))
+
+# Add total row (only for pct_of_high_value_customers)
+total_row <- top_combos %>%
+  summarise(
+    trade_channel = "Total",
+    order_type = "",
+    frequent_order_type = "",
+    cluster = "",
+    total = sum(total),
+    high_value_orders = sum(high_value_orders),
+    pct_high_value = NA,
+    pct_of_total_customers = NA,
+    pct_of_high_value_customers = round(sum(pct_of_high_value_customers), 1)
+  )
+
+# Combine with main table
+top_combos_final <- bind_rows(top_combos, total_row)
+
+# Create styled table
+top_combos_final %>%
+  kable("html", digits = 1, 
+        caption = "Categorical Combinations with >10% Probability of High-Value Orders (order_over_400)",
+        col.names = c("Trade Channel", "Order Type", "Frequent Order Type", "Cluster", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:4, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white") %>%
+  row_spec(nrow(top_combos_final), bold = TRUE, background = "#f0f0f0")
+
+
+
+```
+
+
+### Categorical Combinations with <23% Probability of High-Value Orders
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_400 == 1)
+
+# Get combinations with % high-value < 23%
+low_combos <- CLARA %>%
+  group_by(trade_channel, order_type, frequent_order_type, cluster) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_400 == 1),
+    pct_high_value = mean(order_over_400 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 30) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  filter(pct_high_value < 23) %>%
+  arrange(pct_high_value)
+
+# Add total row (only for pct_of_high_value_customers)
+total_row <- low_combos %>%
+  summarise(
+    trade_channel = "Total",
+    order_type = "",
+    frequent_order_type = "",
+    cluster = "",
+    total = sum(total),
+    high_value_orders = sum(high_value_orders),
+    pct_high_value = NA,
+    pct_of_total_customers = NA,
+    pct_of_high_value_customers = round(sum(pct_of_high_value_customers), 1)
+  )
+
+# Combine with main table
+low_combos_final <- bind_rows(low_combos, total_row)
+
+# Create styled table
+low_combos_final %>%
+  kable("html", digits = 1,
+        caption = "Categorical Combinations with <23% Probability of High-Value Orders (order_over_400)",
+        col.names = c("Trade Channel", "Order Type", "Frequent Order Type", "Cluster", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:4, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white") %>%
+  row_spec(nrow(low_combos_final), bold = TRUE, background = "#f0f0f0")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Top Categorical Combinations with Highest Probability of High-Value Orders Without Cluster 500
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_500 == 1)
+
+# Get all combinations with >30% high-value rate (excluding cluster)
+top_combos <- CLARA %>%
+  group_by(trade_channel, order_type, frequent_order_type) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_500 == 1),
+    pct_high_value = mean(order_over_500 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 30) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  filter(pct_high_value > 30) %>%
+  arrange(desc(pct_high_value))
+
+# Add total row
+total_row <- top_combos %>%
+  summarise(
+    trade_channel = "Total",
+    order_type = "",
+    frequent_order_type = "",
+    total = sum(total),
+    high_value_orders = sum(high_value_orders),
+    pct_high_value = NA,
+    pct_of_total_customers = NA,
+    pct_of_high_value_customers = round(sum(pct_of_high_value_customers), 1)
+  )
+
+# Combine table and total
+top_combos_final <- bind_rows(top_combos, total_row)
+
+# Create styled table
+top_combos_final %>%
+  kable("html", digits = 1,
+        caption = "Categorical Combinations (No Cluster) with >50% Probability of High-Value Orders (order_over_500)",
+        col.names = c("Trade Channel", "Order Type", "Frequent Order Type", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:3, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white") %>%
+  row_spec(nrow(top_combos_final), bold = TRUE, background = "#f0f0f0")
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+### Categorical Combinations (No Cluster) with <23% High-Value Orders (order_over_500)
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_500 == 1)
+
+# Get combinations with <23% high-value rate (excluding cluster)
+low_combos_500 <- CLARA %>%
+  group_by(trade_channel, order_type, frequent_order_type) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_500 == 1),
+    pct_high_value = mean(order_over_500 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 30) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  filter(pct_high_value < 23) %>%
+  arrange(pct_high_value)
+
+# Add total row
+total_row <- low_combos_500 %>%
+  summarise(
+    trade_channel = "Total",
+    order_type = "",
+    frequent_order_type = "",
+    total = sum(total),
+    high_value_orders = sum(high_value_orders),
+    pct_high_value = NA,
+    pct_of_total_customers = NA,
+    pct_of_high_value_customers = round(sum(pct_of_high_value_customers), 1)
+  )
+
+low_combos_500_final <- bind_rows(low_combos_500, total_row)
+
+# Styled table
+low_combos_500_final %>%
+  kable("html", digits = 1,
+        caption = "Categorical Combinations (No Cluster) with <23% Probability of High-Value Orders (order_over_500)",
+        col.names = c("Trade Channel", "Order Type", "Frequent Order Type", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:3, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white") %>%
+  row_spec(nrow(low_combos_500_final), bold = TRUE, background = "#f0f0f0")
+
+```
+
+
+# Top 10 Most Common Characteristics Among High-Value Customers (order_over_500)
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Filter to high-value customers
+high_value_customers <- as_tibble(CLARA) %>%
+  filter(order_over_500 == 1)
+
+# Get top 10 most common values for each selected feature
+top_10_trade_channel <- high_value_customers %>%
+  count(trade_channel, sort = TRUE) %>%
+  slice_max(n, n = 10)
+
+top_10_order_type <- high_value_customers %>%
+  count(order_type, sort = TRUE) %>%
+  slice_max(n, n = 10)
+
+top_10_frequent_order_type <- high_value_customers %>%
+  count(frequent_order_type, sort = TRUE) %>%
+  slice_max(n, n = 10)
+
+top_10_cluster <- high_value_customers %>%
+  count(cluster, sort = TRUE) %>%
+  slice_max(n, n = 10)
+
+# Optionally format each as a nice table
+top_10_trade_channel %>%
+  kable("html", caption = "Top 10 Trade Channels Among High-Value Customers", col.names = c("Trade Channel", "Count")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+top_10_order_type %>%
+  kable("html", caption = "Top 10 Order Types Among High-Value Customers", col.names = c("Order Type", "Count")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+top_10_frequent_order_type %>%
+  kable("html", caption = "Top 10 Frequent Order Types Among High-Value Customers", col.names = c("Frequent Order Type", "Count")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+top_10_cluster %>%
+  kable("html", caption = "Top 10 Clusters Among High-Value Customers", col.names = c("Cluster", "Count")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+
+
+```
+
+
+### Customer Segments with Low Conversion to High-Value Orders (order_over_500 < 23%)
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Convert to tibble
+clara_tbl <- as_tibble(CLARA)
+
+# Function to calculate % of high-value customers in each category
+get_low_value_categories <- function(data, feature, threshold = 0.23) {
+  data %>%
+    group_by(.data[[feature]]) %>%
+    summarise(
+      total = n(),
+      high_value_count = sum(order_over_500 == 1),
+      high_value_pct = high_value_count / total
+    ) %>%
+    filter(high_value_pct < threshold) %>%
+    arrange(high_value_pct)
+}
+
+# Apply to each feature
+low_trade_channels <- get_low_value_categories(clara_tbl, "trade_channel")
+low_order_types <- get_low_value_categories(clara_tbl, "order_type")
+low_frequent_order_types <- get_low_value_categories(clara_tbl, "frequent_order_type")
+low_clusters <- get_low_value_categories(clara_tbl, "cluster")
+
+# Format as tables
+low_trade_channels %>%
+  kable("html", caption = "Trade Channels with <23% High-Value Customers", col.names = c("Trade Channel", "Total", "High-Value Count", "% High-Value")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+low_order_types %>%
+  kable("html", caption = "Order Types with <23% High-Value Customers", col.names = c("Order Type", "Total", "High-Value Count", "% High-Value")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+low_frequent_order_types %>%
+  kable("html", caption = "Frequent Order Types with <23% High-Value Customers", col.names = c("Frequent Order Type", "Total", "High-Value Count", "% High-Value")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+low_clusters %>%
+  kable("html", caption = "Clusters with <23% High-Value Customers", col.names = c("Cluster", "Total", "High-Value Count", "% High-Value")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+
+```
+
+
+### Customer Segments with Elevated High-Value Order Rates (order_over_500 > 30%)
+```{r}
+
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Convert to tibble
+clara_tbl <- as_tibble(CLARA)
+
+# Reusable function to calculate % of high-value customers per category and filter > 30%
+get_high_value_categories <- function(data, feature, threshold = 0.30) {
+  data %>%
+    group_by(.data[[feature]]) %>%
+    summarise(
+      total = n(),
+      high_value_count = sum(order_over_500 == 1),
+      high_value_pct = high_value_count / total
+    ) %>%
+    filter(high_value_pct > threshold) %>%
+    arrange(desc(high_value_pct))
+}
+
+# Apply function to each feature
+high_trade_channels <- get_high_value_categories(clara_tbl, "trade_channel")
+high_order_types <- get_high_value_categories(clara_tbl, "order_type")
+high_frequent_order_types <- get_high_value_categories(clara_tbl, "frequent_order_type")
+high_clusters <- get_high_value_categories(clara_tbl, "cluster")
+
+# Format tables
+high_trade_channels %>%
+  kable("html", caption = "Trade Channels with >30% High-Value Customers", col.names = c("Trade Channel", "Total", "High-Value Count", "% High-Value")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+high_order_types %>%
+  kable("html", caption = "Order Types with >30% High-Value Customers", col.names = c("Order Type", "Total", "High-Value Count", "% High-Value")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+high_frequent_order_types %>%
+  kable("html", caption = "Frequent Order Types with >30% High-Value Customers", col.names = c("Frequent Order Type", "Total", "High-Value Count", "% High-Value")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+high_clusters %>%
+  kable("html", caption = "Clusters with >30% High-Value Customers", col.names = c("Cluster", "Total", "High-Value Count", "% High-Value")) %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+
+
+```
+
+
+
+
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Convert to tibble
+clara_tbl <- as_tibble(CLARA)
+
+# Define helper function for segment classification
+get_segment_categories <- function(data, feature, low_threshold = 0.23, high_threshold = 0.30) {
+  data %>%
+    group_by(.data[[feature]]) %>%
+    summarise(
+      total = n(),
+      high_value_count = sum(order_over_500 == 1),
+      high_value_pct = high_value_count / total,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      segment = case_when(
+        high_value_pct < low_threshold ~ "White Truck (Low-Performing)",
+        high_value_pct > high_threshold ~ "Red Truck (High-Performing)",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(segment)) %>%
+    arrange(desc(high_value_pct)) %>%
+    mutate(
+      high_value_pct = round(100 * high_value_pct, 1),
+      feature = feature
+    ) %>%
+    rename(category = !!feature)
+}
+
+# Run across all 4 features
+features <- c("trade_channel", "order_type", "frequent_order_type", "cluster")
+
+# Combine all results
+all_segments <- bind_rows(
+  lapply(features, function(f) get_segment_categories(clara_tbl, f))
+)
+
+# Final styled table
+all_segments %>%
+  select(Feature = feature, Category = category, Total = total, 
+         `High-Value Orders` = high_value_count, `% High-Value` = high_value_pct, Segment = segment) %>%
+  kable("html", digits = 1,
+        caption = "Red Truck vs White Truck Segments: High-Value Order Behavior by Category") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#2C3E50", color = "white") %>%
+  row_spec(which(all_segments$segment == "Red Truck (High-Performing)"), background = "#FFCDD2") %>%
+  row_spec(which(all_segments$segment == "White Truck (Low-Performing)"), background = "#ECEFF1")
+
+```
+
+
+```{r}
+library(dplyr)
+library(randomForest)
+library(knitr)
+library(kableExtra)
+
+# Get feature importance from your trained model (assuming it's named rf_model)
+importance_df <- importance(rf_model, type = 1) %>%
+  as.data.frame() %>%
+  rownames_to_column("Feature") %>%
+  arrange(desc(MeanDecreaseAccuracy)) %>%
+  slice(1:10)  # Top 10 features
+
+# Create styled table
+importance_df %>%
+  select(Feature, MeanDecreaseAccuracy) %>%
+  kable("html", digits = 2,
+        caption = "Top 10 Features That Predict High-Value Customers (order_over_500)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+importance_df <- importance(rf_model) %>%
+  as.data.frame() %>%
+  rownames_to_column("Feature") %>%
+  arrange(desc(MeanDecreaseAccuracy)) %>%
+  slice(1:10)
+
+```
+```{r}
+
+library(dplyr)
+library(randomForest)
+library(knitr)
+library(kableExtra)
+
+# Get feature importance from your trained random forest model
+importance_df <- importance(rf_model) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Feature") %>%
+  arrange(desc(MeanDecreaseAccuracy)) %>%
+  dplyr::slice(1:10)  # Top 10 features
+
+importance_df %>%
+  select(Feature, MeanDecreaseAccuracy) %>%
+  kable("html", digits = 2,
+        caption = "Top 10 Features That Predict High-Value Customers (order_over_500)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#### ALL Customers: SMOTE-enhanced Random Forest model with hyperparamter tuning Over 400
+
+```{r smote_rf_tuning, echo=FALSE}
+
+# Convert categorical variables to factors
+categorical_vars <- c("primary_group_number", "cold_drink_channel", "frequent_order_type",
+                      "trade_channel", "sub_trade_channel", "order_type", "cluster")
+
+CLARA[, (categorical_vars) := lapply(.SD, as.factor), .SDcols = categorical_vars]
+
+# Convert logical variables to numeric (TRUE/FALSE -> 1/0)
+CLARA[, local_market_partner := as.numeric(local_market_partner)]
+CLARA[, co2_customer := as.numeric(co2_customer)]
+
+# Handle high-cardinality categorical features by integer encoding
+for (col in categorical_vars) {
+  if (nlevels(CLARA[[col]]) > 53) {
+    CLARA[[col]] <- as.integer(as.factor(CLARA[[col]]))  # Convert to numeric encoding
+  }
+}
+
+features <- c("primary_group_number", "cold_drink_channel", "frequent_order_type",
+              "trade_channel", "sub_trade_channel", "local_market_partner",
+              "co2_customer", "order_type", "primary_group_customers",
+              "return_frequency", "customer_tenure", "cluster", 
+              "neighbor_avg_dist_km", "neighbor_primary_group_count", "neighbor_local_market_partners", "neighbor_avg_return_freq",
+              "neighbor_avg_order_transactions_2024", "neighbor_avg_order_transaction_std_2024", "neighbor_avg_ordered_total_2024")
+
+# Prepare dataset
+df <- CLARA[, c(features, "order_over_400"), with = FALSE]
+df$order_over_400 <- as.factor(df$order_over_400)  # Convert target to factor
+
+# Split dataset into train and test sets
+set.seed(42)
+trainIndex <- createDataPartition(df$order_over_400, p = 0.8, list = FALSE)
+train_data <- df[trainIndex, ]
+test_data <- df[-trainIndex, ]
+
+# Apply SMOTE using the ROSE package
+train_data_balanced <- ovun.sample(order_over_400 ~ ., data = train_data, method = "over", p = 0.5, seed = 42)$data
+
+# Hyperparameter tuning using tuneRF()
+set.seed(42)
+best_mtry <- tuneRF(train_data_balanced[, -which(names(train_data_balanced) == "order_over_400")], 
+                    train_data_balanced$order_over_400, 
+                    stepFactor = 1.5, improve = 0.01, trace = TRUE, plot = FALSE)
+
+# Select best mtry value
+optimal_mtry <- best_mtry[which.min(best_mtry[, 2]), 1]
+cat("Optimal mtry value:", optimal_mtry, "\n")
+
+# Train Optimized Random Forest Model
+set.seed(42)
+rf_model_400 <- randomForest(order_over_400 ~ ., data = train_data_balanced, 
+                         ntree = 200,  # Increased trees for better accuracy
+                         mtry = optimal_mtry, 
+                         importance = TRUE)
+
+
+# Predictions on test data
+predictions <- predict(rf_model_400, test_data)
+
+# Model Evaluation
+conf_matrix <- confusionMatrix(predictions, test_data$order_over_400)
+print(conf_matrix)
+
+# Feature Importance
+importance(rf_model_400)
+varImpPlot(rf_model_400)
+```
+
+
+
+#### ALL Customers: SMOTE-enhanced Random Forest model with hyperparamter tuning Over 600
+
+```{r smote_rf_tuning, echo=FALSE}
+
+# Convert categorical variables to factors
+categorical_vars <- c("primary_group_number", "cold_drink_channel", "frequent_order_type",
+                      "trade_channel", "sub_trade_channel", "order_type", "cluster")
+
+CLARA[, (categorical_vars) := lapply(.SD, as.factor), .SDcols = categorical_vars]
+
+# Convert logical variables to numeric (TRUE/FALSE -> 1/0)
+CLARA[, local_market_partner := as.numeric(local_market_partner)]
+CLARA[, co2_customer := as.numeric(co2_customer)]
+
+# Handle high-cardinality categorical features by integer encoding
+for (col in categorical_vars) {
+  if (nlevels(CLARA[[col]]) > 53) {
+    CLARA[[col]] <- as.integer(as.factor(CLARA[[col]]))  # Convert to numeric encoding
+  }
+}
+
+features <- c("primary_group_number", "cold_drink_channel", "frequent_order_type",
+              "trade_channel", "sub_trade_channel", "local_market_partner",
+              "co2_customer", "order_type", "primary_group_customers",
+              "return_frequency", "customer_tenure", "cluster", 
+              "neighbor_avg_dist_km", "neighbor_primary_group_count", "neighbor_local_market_partners", "neighbor_avg_return_freq",
+              "neighbor_avg_order_transactions_2024", "neighbor_avg_order_transaction_std_2024", "neighbor_avg_ordered_total_2024")
+
+# Prepare dataset
+df <- CLARA[, c(features, "order_over_600"), with = FALSE]
+df$order_over_600 <- as.factor(df$order_over_600)  # Convert target to factor
+
+# Split dataset into train and test sets
+set.seed(42)
+trainIndex <- createDataPartition(df$order_over_600, p = 0.8, list = FALSE)
+train_data <- df[trainIndex, ]
+test_data <- df[-trainIndex, ]
+
+# Apply SMOTE using the ROSE package
+train_data_balanced <- ovun.sample(order_over_600 ~ ., data = train_data, method = "over", p = 0.5, seed = 42)$data
+
+# Hyperparameter tuning using tuneRF()
+set.seed(42)
+best_mtry <- tuneRF(train_data_balanced[, -which(names(train_data_balanced) == "order_over_600")], 
+                    train_data_balanced$order_over_600, 
+                    stepFactor = 1.5, improve = 0.01, trace = TRUE, plot = FALSE)
+
+# Select best mtry value
+optimal_mtry <- best_mtry[which.min(best_mtry[, 2]), 1]
+cat("Optimal mtry value:", optimal_mtry, "\n")
+
+# Train Optimized Random Forest Model
+set.seed(42)
+rf_model_600 <- randomForest(order_over_600 ~ ., data = train_data_balanced, 
+                         ntree = 200,  # Increased trees for better accuracy
+                         mtry = optimal_mtry, 
+                         importance = TRUE)
+
+
+# Predictions on test data
+predictions <- predict(rf_model_600, test_data)
+
+# Model Evaluation
+conf_matrix <- confusionMatrix(predictions, test_data$order_over_600)
+print(conf_matrix)
+
+# Feature Importance
+importance(rf_model_600)
+varImpPlot(rf_model_600)
+```
+
+
+
+#### Extract and Sort Feature Importance 500
+```{r Extract and Sort Feature Importance}
+# Extract variable importance
+feature_importance_500 <- importance(rf_model_500)
+
+# Convert to data.frame and sort
+importance_df_500 <- as.data.frame(feature_importance_500)
+importance_df_500$Feature <- rownames(importance_df_500)
+
+# Sort by MeanDecreaseAccuracy (most relevant measure)
+importance_df_500 <- importance_df_500[order(-importance_df_500$MeanDecreaseAccuracy), ]
+
+# View top features
+head(importance_df_500, 10)
+
+```
+#### Extract and Sort Feature Importance 400
+```{r Extract and Sort Feature Importance}
+# Extract variable importance
+feature_importance_400 <- importance(rf_model_400)
+
+# Convert to data.frame and sort
+importance_df_400 <- as.data.frame(feature_importance_400)
+importance_df_400$Feature <- rownames(importance_df_400)
+
+# Sort by MeanDecreaseAccuracy (most relevant measure)
+importance_df_400 <- importance_df_400[order(-importance_df_400$MeanDecreaseAccuracy), ]
+
+# View top features
+head(importance_df_400, 10)
+
+```
+
+#### Extract and Sort Feature Importance 600
+```{r Extract and Sort Feature Importance}
+# Extract variable importance
+feature_importance_600 <- importance(rf_model_600)
+
+# Convert to data.frame and sort
+importance_df_600 <- as.data.frame(feature_importance_600)
+importance_df_600$Feature <- rownames(importance_df_600)
+
+# Sort by MeanDecreaseAccuracy (most relevant measure)
+importance_df_600 <- importance_df_600[order(-importance_df_600$MeanDecreaseAccuracy), ]
+
+# View top features
+head(importance_df_600, 10)
+
+```
+
+
+#### Visualize Top 10 Features 400
+```{r Visualize Top 10 Features}
+# Load ggplot2 if not already
+library(ggplot2)
+
+# Plot top 10 features
+top_10 <- importance_df_400[1:10, ]
+
+ggplot(top_10, aes(x = reorder(Feature, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Important Features for order_over_500",
+       x = "Feature",
+       y = "Mean Decrease in Accuracy") +
+  theme_minimal()
+
+# Load kableExtra and knitr
+ library(knitr)
+ library(kableExtra)
+
+# Extract and format top 10 features
+top_10_table <- importance_df_400[1:10, c("Feature", "MeanDecreaseAccuracy", "MeanDecreaseGini")]
+
+# Create a styled table
+top_10_table %>%
+  kable(format = "html", caption = "Top 10 Most Important Features for Predicting order_over_400", digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#0073C2FF")
+
+# MeanDecreaseAccuracy: measures how much the model's prediction accuracy decreases when a given feature is randomly permuted (shuffled)
+
+# MeanDecreaseGini: total decrease in node impurity (Gini Impurity) that results from splits on that feature, averaged over all trees in the forest
+
+
+```
+
+#### Visualize Top 10 Features 600
+```{r Visualize Top 10 Features}
+# Load ggplot2 if not already
+library(ggplot2)
+
+# Plot top 10 features
+top_10 <- importance_df_600[1:10, ]
+
+ggplot(top_10, aes(x = reorder(Feature, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Important Features for order_over_500",
+       x = "Feature",
+       y = "Mean Decrease in Accuracy") +
+  theme_minimal()
+
+# Load kableExtra and knitr
+ library(knitr)
+ library(kableExtra)
+
+# Extract and format top 10 features
+top_10_table <- importance_df_600[1:10, c("Feature", "MeanDecreaseAccuracy", "MeanDecreaseGini")]
+
+# Create a styled table
+top_10_table %>%
+  kable(format = "html", caption = "Top 10 Most Important Features for Predicting order_over_600", digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#0073C2FF")
+
+# MeanDecreaseAccuracy: measures how much the model's prediction accuracy decreases when a given feature is randomly permuted (shuffled)
+
+# MeanDecreaseGini: total decrease in node impurity (Gini Impurity) that results from splits on that feature, averaged over all trees in the forest
+
+
+```
+
+
+
+#### Cluster Breakdown 400
+```{r Cluster Breakdown}
+
+library(dplyr)
+
+CLARA %>%
+  group_by(cluster) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_400 == 1),
+    pct_high_value = mean(order_over_400 == 1)
+  ) %>%
+  arrange(desc(pct_high_value))
+
+```
+
+#### Cluster Breakdown 600
+```{r Cluster Breakdown}
+
+library(dplyr)
+
+CLARA %>%
+  group_by(cluster) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_600 == 1),
+    pct_high_value = mean(order_over_600 == 1)
+  ) %>%
+  arrange(desc(pct_high_value))
+
+```
+
+
+### Summary Stats for Cluster 2 500
+```{r}
+CLARA %>%
+  filter(cluster == "2") %>%
+  summarise(
+    count = n(),
+    pct_high_value = mean(order_over_500 == 1),
+    avg_order_total = mean(combined_ordered_total, na.rm = TRUE),
+    avg_tenure = mean(customer_tenure, na.rm = TRUE),
+    avg_return_freq = mean(return_frequency, na.rm = TRUE),
+    avg_neighbor_dist_km = mean(neighbor_avg_dist_km, na.rm = TRUE),
+    avg_order_txns_2024 = mean(neighbor_avg_order_transactions_2024, na.rm = TRUE),
+    avg_order_type = n_distinct(order_type),
+    avg_trade_channel = n_distinct(trade_channel)
+  )
+
+```
+
+### Summary Stats for Cluster 2 400
+```{r}
+CLARA %>%
+  filter(cluster == "2") %>%
+  summarise(
+    count = n(),
+    pct_high_value = mean(order_over_400 == 1),
+    avg_order_total = mean(combined_ordered_total, na.rm = TRUE),
+    avg_tenure = mean(customer_tenure, na.rm = TRUE),
+    avg_return_freq = mean(return_frequency, na.rm = TRUE),
+    avg_neighbor_dist_km = mean(neighbor_avg_dist_km, na.rm = TRUE),
+    avg_order_txns_2024 = mean(neighbor_avg_order_transactions_2024, na.rm = TRUE),
+    avg_order_type = n_distinct(order_type),
+    avg_trade_channel = n_distinct(trade_channel)
+  )
+
+```
+### Summary Stats for Cluster 2 600
+```{r}
+CLARA %>%
+  filter(cluster == "2") %>%
+  summarise(
+    count = n(),
+    pct_high_value = mean(order_over_600 == 1),
+    avg_order_total = mean(combined_ordered_total, na.rm = TRUE),
+    avg_tenure = mean(customer_tenure, na.rm = TRUE),
+    avg_return_freq = mean(return_frequency, na.rm = TRUE),
+    avg_neighbor_dist_km = mean(neighbor_avg_dist_km, na.rm = TRUE),
+    avg_order_txns_2024 = mean(neighbor_avg_order_transactions_2024, na.rm = TRUE),
+    avg_order_type = n_distinct(order_type),
+    avg_trade_channel = n_distinct(trade_channel)
+  )
+
+```
+
+
+#### Categorical Breakdown – Trade Channel & Order Type
+```{r Categorical Breakdown – Trade Channel & Order Type}
+# Trade Channel Distribution
+CLARA %>%
+  filter(cluster == "2") %>%
+  group_by(trade_channel) %>%
+  summarise(count = n()) %>%
+  mutate(share = round(count / sum(count), 3)) %>%
+  arrange(desc(share))
+
+# Order Type Distribution
+CLARA %>%
+  filter(cluster == "2") %>%
+  group_by(order_type) %>%
+  summarise(count = n()) %>%
+  mutate(share = round(count / sum(count), 3)) %>%
+  arrange(desc(share))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Top Categorical Combinations with Highest Probability of High-Value Orders Without Cluster 400
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Get top 20 combinations (excluding cluster)
+top_combos <- CLARA %>%
+  group_by(trade_channel, order_type, frequent_order_type) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_400 == 1),
+    pct_high_value = mean(order_over_400 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  arrange(desc(pct_high_value)) %>%
+  head(20)
+
+# Format percentages
+top_combos$pct_high_value <- round(100 * top_combos$pct_high_value, 1)
+
+# Create styled table
+top_combos %>%
+  kable("html", digits = 1,
+        caption = "Top 20 Categorical Combinations (No Cluster) with Highest Probability of High-Value Orders (order_over_400)",
+        col.names = c("Trade Channel", "Order Type", "Frequent Order Type", "Total", "High-Value Orders", "% High-Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:3, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+```
+
+
+# Top Categorical Combinations with Highest Probability of High-Value Orders Without Cluster 600
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Get top 20 combinations (excluding cluster)
+top_combos <- CLARA %>%
+  group_by(trade_channel, order_type, frequent_order_type) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_600 == 1),
+    pct_high_value = mean(order_over_600 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  arrange(desc(pct_high_value)) %>%
+  head(20)
+
+# Format percentages
+top_combos$pct_high_value <- round(100 * top_combos$pct_high_value, 1)
+
+# Create styled table
+top_combos %>%
+  kable("html", digits = 1,
+        caption = "Top 20 Categorical Combinations (No Cluster) with Highest Probability of High-Value Orders (order_over_600)",
+        col.names = c("Trade Channel", "Order Type", "Frequent Order Type", "Total", "High-Value Orders", "% High-Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:3, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+```
+
+
+# Top Categorical Combinations with Highest Probability of High-Value Orders 400
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Get top 20 combinations
+top_combos <- CLARA %>%
+  group_by(trade_channel, order_type, frequent_order_type, cluster) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_400 == 1),
+    pct_high_value = mean(order_over_400 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  arrange(desc(pct_high_value)) %>%
+  head(20)
+
+# Format percentages
+top_combos$pct_high_value <- round(100 * top_combos$pct_high_value, 1)
+
+# Create styled table
+top_combos %>%
+  kable("html", digits = 1, 
+        caption = "Top 20 Categorical Combinations with Highest Probability of High-Value Orders order_over_400",
+        col.names = c("Trade Channel", "Order Type", "Frequent Order Type", "Cluster", "Total", "High-Value Orders", "% High-Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:4, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+
+```
+
+# Top Categorical Combinations with Highest Probability of High-Value Orders 600
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Get top 20 combinations
+top_combos <- CLARA %>%
+  group_by(trade_channel, order_type, frequent_order_type, cluster) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_600 == 1),
+    pct_high_value = mean(order_over_600 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  arrange(desc(pct_high_value)) %>%
+  head(20)
+
+# Format percentages
+top_combos$pct_high_value <- round(100 * top_combos$pct_high_value, 1)
+
+# Create styled table
+top_combos %>%
+  kable("html", digits = 1, 
+        caption = "Top 20 Categorical Combinations with Highest Probability of High-Value Orders order_over_600",
+        col.names = c("Trade Channel", "Order Type", "Frequent Order Type", "Cluster", "Total", "High-Value Orders", "% High-Value")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:4, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+
+```
+
+
+### Top Categorical Combinations with Highest Probability of High-Value Orders (order_over_500) — Only Trade Channel and Order Type
+```{r}
+# Top Categorical Combinations with Highest Probability of High-Value Orders (order_over_500) — Without Cluster
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_500 == 1)
+
+# Get top 20 combinations (grouped by trade_channel and order_type)
+top_combos <- CLARA %>%
+  group_by(trade_channel, order_type) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_500 == 1),
+    pct_high_value = mean(order_over_500 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  arrange(desc(pct_high_value)) %>%
+  head(20)
+
+# Create styled table
+top_combos %>%
+  kable("html", digits = 1,
+        caption = "Top 20 Trade Channel and Order Type Combinations with Highest Probability of High-Value Orders (order_over_500)",
+        col.names = c("Trade Channel", "Order Type", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:2, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+```
+
+### Top Categorical Combinations with Highest Probability of High-Value Orders (order_over_500) — Only Trade Channel and Frequency Order Type
+```{r}
+# Top Categorical Combinations with Highest Probability of High-Value Orders (order_over_500)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_500 == 1)
+
+# Get top 20 combinations (grouped by trade_channel and frequent_order_type)
+top_combos <- CLARA %>%
+  group_by(trade_channel, frequent_order_type) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_500 == 1),
+    pct_high_value = mean(order_over_500 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  arrange(desc(pct_high_value)) %>%
+  head(20)
+
+# Create styled table
+top_combos %>%
+  kable("html", digits = 1,
+        caption = "Top 20 Trade Channel and Frequent Order Type Combinations with Highest Probability of High-Value Orders (order_over_500)",
+        col.names = c("Trade Channel", "Frequent Order Type", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:2, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+
+```
+
+### Top Categorical Combinations with Highest Probability of High-Value Orders (order_over_500) — Only Order Type and Frequency Order Type
+```{r}
+# Top Categorical Combinations with Highest Probability of High-Value Orders (order_over_500)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_500 == 1)
+
+# Get top 20 combinations (grouped by order_type and frequent_order_type)
+top_combos <- CLARA %>%
+  group_by(order_type, frequent_order_type) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_500 == 1),
+    pct_high_value = mean(order_over_500 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  arrange(desc(pct_high_value)) %>%
+  head(20)
+
+# Create styled table
+top_combos %>%
+  kable("html", digits = 1,
+        caption = "Top 20 Order Type and Frequent Order Type Combinations with Highest Probability of High-Value Orders (order_over_500)",
+        col.names = c("Order Type", "Frequent Order Type", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1:2, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+
+```
+
+Top Categorical Combinations with Highest Probability of High-Value Orders (order_over_500) — Only Trade Channel
+```{r}
+# High-Value Order Rate by Trade Channel (order_over_500)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_500 == 1)
+
+# Summarize by trade_channel with additional % calculations
+top_trade_channels <- CLARA %>%
+  group_by(trade_channel) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_500 == 1),
+    pct_high_value = mean(order_over_500 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  arrange(desc(pct_high_value))
+
+# Styled table output
+top_trade_channels %>%
+  kable("html", digits = 1,
+        caption = "High-Value Order Rate by Trade Channel (order_over_500)",
+        col.names = c("Trade Channel", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+
+```
+
+#### Top Categorical Combinations with Highest Probability of High-Value Orders (order_over_500) — Only Order Type 
+```{r}
+# High-Value Order Rate by Order Type (order_over_500)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_500 == 1)
+
+# Summarize by order_type
+top_order_types <- CLARA %>%
+  group_by(order_type) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_500 == 1),
+    pct_high_value = mean(order_over_500 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  arrange(desc(pct_high_value))
+
+# Styled table output
+top_order_types %>%
+  kable("html", digits = 1,
+        caption = "High-Value Order Rate by Order Type (order_over_500)",
+        col.names = c("Order Type", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+```
+
+#### Top Categorical Combinations with Highest Probability of High-Value Orders (order_over_500) — Only Frequent Order Type 
+```{r}
+# High-Value Order Rate by Frequent Order Type (order_over_500)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_500 == 1)
+
+# Summarize by frequent_order_type
+top_freq_order_types <- CLARA %>%
+  group_by(frequent_order_type) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_500 == 1),
+    pct_high_value = mean(order_over_500 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  arrange(desc(pct_high_value))
+
+# Create styled table
+top_freq_order_types %>%
+  kable("html", digits = 1,
+        caption = "High-Value Order Rate by Frequent Order Type (order_over_500)",
+        col.names = c("Frequent Order Type", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+```
+
+
+#### Top Categorical Combinations with Highest Probability of High-Value Orders (order_over_500) — Only Cluster
+```{r}
+# High-Value Order Rate by Cluster (order_over_500)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Calculate overall totals
+total_customers_overall <- nrow(CLARA)
+total_high_value_customers <- sum(CLARA$order_over_500 == 1)
+
+# Summarize by cluster
+top_clusters <- CLARA %>%
+  group_by(cluster) %>%
+  summarise(
+    total = n(),
+    high_value_orders = sum(order_over_500 == 1),
+    pct_high_value = mean(order_over_500 == 1),
+    .groups = "drop"
+  ) %>%
+  filter(total >= 50) %>%
+  mutate(
+    pct_high_value = round(100 * pct_high_value, 1),
+    pct_of_total_customers = round(100 * total / total_customers_overall, 1),
+    pct_of_high_value_customers = round(100 * high_value_orders / total_high_value_customers, 1)
+  ) %>%
+  arrange(desc(pct_high_value))
+
+# Create styled table
+top_clusters %>%
+  kable("html", digits = 1,
+        caption = "High-Value Order Rate by Cluster (order_over_500)",
+        col.names = c("Cluster", "Total", "High-Value Orders", "% High-Value", "% of Total Customers", "% of High-Value Customers")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white")
+
+```
+
+
+### Total Customers by High-Value Order Status (order_over_500)
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Summarize totals by order_over_500
+order_summary <- CLARA %>%
+  group_by(order_over_500) %>%
+  summarise(
+    total_customers = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    order_over_500 = ifelse(order_over_500 == 1, "High-Value (>500)", "Not High-Value (<= 500)"),
+    percent = round(100 * total_customers / sum(total_customers), 1)
+  )
+
+# Add grand total row
+order_summary <- bind_rows(
+  order_summary,
+  order_summary %>%
+    summarise(
+      order_over_500 = "Total",
+      total_customers = sum(total_customers),
+      percent = 100
+    )
+)
+
+# Display styled table
+order_summary %>%
+  kable("html",
+        caption = "Total Customers by High-Value Order Status (order_over_500)",
+        col.names = c("Order Status", "Customer Count", "% of Total")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, background = "#2C3E50", color = "white") %>%
+  row_spec(nrow(order_summary), background = "#f2f2f2", bold = TRUE)  # Highlight total row
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
