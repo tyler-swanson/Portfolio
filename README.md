@@ -1,4 +1,4 @@
-# Swire Coca-Cola Capstone Project – Delivery Optimization - Individual Work
+# Capstone Project – Delivery Optimization - Individual Work
 
 **Tyler Swanson**  
 [LinkedIn Profile](https://www.linkedin.com/in/tyler-jacob-swanson)
