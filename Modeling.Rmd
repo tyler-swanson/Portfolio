@@ -1336,22 +1336,6 @@ low_combos_final %>%
   row_spec(nrow(low_combos_final), bold = TRUE, background = "#f0f0f0")
 
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # Top Categorical Combinations with Highest Probability of High-Value Orders Without Cluster 500
 ```{r}
 library(dplyr)
@@ -1406,19 +1390,7 @@ top_combos_final %>%
   row_spec(0, background = "#2C3E50", color = "white") %>%
   row_spec(nrow(top_combos_final), bold = TRUE, background = "#f0f0f0")
 
-
 ```
-
-
-
-
-
-
-
-
-
-
-
 
 ### Categorical Combinations (No Cluster) with <23% High-Value Orders (order_over_500)
 ```{r}
@@ -1474,7 +1446,6 @@ low_combos_500_final %>%
   row_spec(nrow(low_combos_500_final), bold = TRUE, background = "#f0f0f0")
 
 ```
-
 
 # Top 10 Most Common Characteristics Among High-Value Customers (order_over_500)
 ```{r}
@@ -1736,35 +1707,6 @@ importance_df %>%
 
 
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #### ALL Customers: SMOTE-enhanced Random Forest model with hyperparamter tuning Over 400
 
@@ -2145,18 +2087,6 @@ CLARA %>%
   arrange(desc(share))
 
 ```
-
-
-
-
-
-
-
-
-
-
-
-
 
 # Top Categorical Combinations with Highest Probability of High-Value Orders Without Cluster 400
 ```{r}
@@ -2617,118 +2547,5 @@ order_summary %>%
 
 
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
