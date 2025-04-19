@@ -1,7 +1,16 @@
 # Capstone Project – Delivery Optimization (Individual Work)
 
-**Tyler Swanson**  
-[LinkedIn Profile](https://www.linkedin.com/in/tyler-jacob-swanson)
+<table style="border: none; border-collapse: collapse;">
+  <tr>
+    <td style="border: none; vertical-align: middle; padding: 0;">
+      <img src="Headshot.jpg" alt="Tyler Swanson" width="180" style="border-radius: 50%; display: block;">
+    </td>
+    <td style="border: none; vertical-align: middle; padding-left: 15px;">
+      <strong>Tyler Swanson</strong><br>
+      <a href="https://www.linkedin.com/in/tyler-jacob-swanson">LinkedIn Profile</a>
+    </td>
+  </tr>
+</table>
 
 ---
 
